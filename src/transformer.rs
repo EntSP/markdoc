@@ -215,6 +215,14 @@ fn should_render_as_tag(node: &Node, schema: &Option<Schema>) -> bool {
             | NodeType::Em
             | NodeType::Strong
             | NodeType::Fence
+            // Soft and hard breaks must survive transform so downstream
+            // renderers can decide their semantics — a soft break is
+            // typically a space, a hard break a forced line break.
+            // Without these branches they collapse to `Scalar::Null`
+            // and disappear from the rendered tree, silently dropping
+            // the inter-word whitespace they represent.
+            | NodeType::Softbreak
+            | NodeType::Hardbreak
     )
 }
 
@@ -265,6 +273,7 @@ fn get_render_name(node: &Node, schema: &Option<Schema>) -> String {
         NodeType::Td => "td".to_string(),
         NodeType::Hr => "hr".to_string(),
         NodeType::Hardbreak => "br".to_string(),
+        NodeType::Softbreak => "softbreak".to_string(),
         _ => "div".to_string(),
     }
 }
