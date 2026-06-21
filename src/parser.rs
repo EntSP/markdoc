@@ -28,6 +28,7 @@ pub fn parse(content: &str, args: Option<ParserArgs>) -> Result<Node> {
 
     let tokenizer = Tokenizer::new();
     let tokens = tokenizer.tokenize_with_tags(&content_with_sentinels, &parsed_tags);
+    let tokens = lift_block_tags(tokens);
     let mut doc = parse_tokens(tokens, args)?;
 
     if let Some(fm) = frontmatter_data {
@@ -36,6 +37,150 @@ pub fn parse(content: &str, args: Option<ParserArgs>) -> Result<Node> {
     }
 
     Ok(doc)
+}
+
+/// Lift block-level Markdoc tags out of the paragraphs pulldown-cmark
+/// wraps them in.
+///
+/// Tags are replaced with inline sentinels before markdown tokenization,
+/// so pulldown sees a lone-on-its-line `{% tag %}` as inline text and
+/// wraps it in a paragraph. A blank line inside a block tag then splits
+/// the content into two paragraphs — the open sentinel trapped in the
+/// first, the close sentinel in the second — and the first paragraph's
+/// `End` event pops the still-open tag off the parse stack, truncating
+/// everything after the blank line (it escapes as a sibling).
+///
+/// This pass walks each paragraph and splits it at every block-level tag
+/// (a Markdoc `Open` / `Close` / `SelfClose` that sits alone on its
+/// line — i.e. is bounded by a soft break or the paragraph edge on both
+/// sides). Each such tag is emitted at block level; the inline runs
+/// between them are re-wrapped as their own paragraphs. The result is
+/// that `{% callout %}` spanning blank lines becomes a real container,
+/// and `{% else /%}` stays a direct child of `{% if %}`. Tags that share
+/// a line with other text (`see {% tagref /%} here`) are left inline.
+fn lift_block_tags(tokens: Vec<Token>) -> Vec<Token> {
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if matches!(tokens[i].event, TokenEvent::Start(TokenType::Paragraph)) {
+            // Find the matching End(Paragraph). Paragraphs are leaf
+            // blocks in CommonMark, so the next End(Paragraph) is ours.
+            let para_start = &tokens[i];
+            let end = (i + 1..tokens.len())
+                .find(|&j| matches!(tokens[j].event, TokenEvent::End(TokenType::Paragraph)));
+            let Some(end) = end else {
+                // Unbalanced (shouldn't happen) — copy verbatim.
+                out.push(tokens[i].clone());
+                i += 1;
+                continue;
+            };
+            let inner = &tokens[i + 1..end];
+            let para_end = &tokens[end];
+            split_paragraph_inner(inner, para_start, para_end, &mut out);
+            i = end + 1;
+        } else {
+            out.push(tokens[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Split one paragraph's `inner` token run at each block-level tag,
+/// appending the result to `out`. `para_start` / `para_end` supply the
+/// `Start`/`End(Paragraph)` tokens reused to re-wrap each inline segment.
+fn split_paragraph_inner(
+    inner: &[Token],
+    para_start: &Token,
+    para_end: &Token,
+    out: &mut Vec<Token>,
+) {
+    let n = inner.len();
+    // Mark which indices are block-level tags (alone on their line).
+    let is_block: Vec<bool> = (0..n).map(|k| is_block_tag_at(inner, k)).collect();
+    if !is_block.iter().any(|b| *b) {
+        // No block tags — emit the paragraph untouched.
+        out.push(para_start.clone());
+        out.extend_from_slice(inner);
+        out.push(para_end.clone());
+        return;
+    }
+
+    let mut seg: Vec<Token> = Vec::new();
+    let mut k = 0;
+    while k < n {
+        if is_block[k] {
+            // Drop a soft break that trails the current segment (the one
+            // that separated it from this tag) before flushing.
+            trim_trailing_softbreak(&mut seg);
+            flush_segment(&mut seg, para_start, para_end, out);
+            out.push(inner[k].clone()); // the tag, now block-level
+            // Skip a soft break immediately following the tag.
+            if k + 2 < n && is_sb_start(&inner[k + 1].event) && is_sb_end(&inner[k + 2].event) {
+                k += 3;
+            } else {
+                k += 1;
+            }
+        } else {
+            seg.push(inner[k].clone());
+            k += 1;
+        }
+    }
+    trim_trailing_softbreak(&mut seg);
+    flush_segment(&mut seg, para_start, para_end, out);
+}
+
+/// True when `inner[k]` is a Markdoc block container tag (`Open` /
+/// `Close` / `SelfClose`) that is alone on its line — bounded on each
+/// side by a soft break or the paragraph edge. Heading-id sugar and
+/// inline tags (sharing a line with text) return false.
+fn is_block_tag_at(inner: &[Token], k: usize) -> bool {
+    let is_tag = matches!(
+        inner[k].event,
+        TokenEvent::Tag(TagKind::Open { .. } | TagKind::Close { .. } | TagKind::SelfClose { .. })
+    );
+    if !is_tag {
+        return false;
+    }
+    let left_ok =
+        k == 0 || (k >= 2 && is_sb_end(&inner[k - 1].event) && is_sb_start(&inner[k - 2].event));
+    let right_ok = k + 1 == inner.len()
+        || (k + 2 < inner.len()
+            && is_sb_start(&inner[k + 1].event)
+            && is_sb_end(&inner[k + 2].event));
+    left_ok && right_ok
+}
+
+fn is_sb_start(ev: &TokenEvent) -> bool {
+    matches!(ev, TokenEvent::Start(TokenType::SoftBreak))
+}
+
+fn is_sb_end(ev: &TokenEvent) -> bool {
+    matches!(ev, TokenEvent::End(TokenType::SoftBreak))
+}
+
+/// Remove a trailing soft break (Start+End pair) from a segment.
+fn trim_trailing_softbreak(seg: &mut Vec<Token>) {
+    let n = seg.len();
+    if n >= 2 && is_sb_start(&seg[n - 2].event) && is_sb_end(&seg[n - 1].event) {
+        seg.truncate(n - 2);
+    }
+}
+
+/// Wrap a non-empty inline segment as a paragraph and append it to
+/// `out`, draining `seg`. A leading soft break is trimmed first; an
+/// all-whitespace / empty segment emits nothing.
+fn flush_segment(seg: &mut Vec<Token>, para_start: &Token, para_end: &Token, out: &mut Vec<Token>) {
+    // Trim a leading soft break.
+    if seg.len() >= 2 && is_sb_start(&seg[0].event) && is_sb_end(&seg[1].event) {
+        seg.drain(0..2);
+    }
+    if seg.is_empty() {
+        return;
+    }
+    out.push(para_start.clone());
+    out.append(seg);
+    out.push(para_end.clone());
 }
 
 fn parse_tokens(tokens: Vec<Token>, args: Option<ParserArgs>) -> Result<Node> {
@@ -405,6 +550,102 @@ mod tests {
             Some(&Scalar::String("x.markdoc".to_string()))
         );
         assert!(partial.children.is_empty());
+    }
+
+    /// Count direct children of `node` that satisfy `pred`.
+    fn count_children(node: &Node, pred: &dyn Fn(&Node) -> bool) -> usize {
+        node.children.iter().filter(|c| pred(c)).count()
+    }
+
+    fn is_para(n: &Node) -> bool {
+        matches!(n.node_type, NodeType::Paragraph)
+    }
+
+    fn tag_named<'a>(root: &'a Node, name: &str) -> Option<&'a Node> {
+        find(root, &|n| {
+            matches!(n.node_type, NodeType::Tag) && n.tag.as_deref() == Some(name)
+        })
+    }
+
+    #[test]
+    fn block_tag_spanning_blank_line_keeps_all_content() {
+        // The regression: a blank line inside a block tag used to close it
+        // early, leaking the second paragraph out as a sibling.
+        let src = "{% callout %}\nFirst para.\n\nSecond para.\n{% /callout %}\n";
+        let doc = parse(src, None).unwrap();
+        let callout = tag_named(&doc, "callout").expect("callout present");
+        // Both paragraphs are now children of the callout.
+        assert_eq!(
+            count_children(callout, &is_para),
+            2,
+            "callout should own both paragraphs, tree was {doc:#?}"
+        );
+        // And nothing escaped to the document root besides the callout.
+        assert_eq!(count_children(&doc, &is_para), 0);
+    }
+
+    #[test]
+    fn block_tag_with_list_keeps_list_inside() {
+        let src = "{% callout %}\nIntro.\n\n- a\n- b\n\n{% /callout %}\n";
+        let doc = parse(src, None).unwrap();
+        let callout = tag_named(&doc, "callout").expect("callout present");
+        assert_eq!(count_children(callout, &is_para), 1);
+        assert_eq!(
+            count_children(callout, &|n| matches!(n.node_type, NodeType::List)),
+            1,
+            "list should live inside the callout"
+        );
+    }
+
+    #[test]
+    fn else_stays_direct_child_of_if() {
+        // `{% else /%}` alone on its line must split the paragraph so it
+        // remains a direct child of `{% if %}` (conditional evaluation
+        // keys on that), even without blank lines around it.
+        let src = "{% if $a %}\nA content\n{% else /%}\nB content\n{% /if %}\n";
+        let doc = parse(src, None).unwrap();
+        let if_node = tag_named(&doc, "if").expect("if present");
+        assert_eq!(
+            count_children(if_node, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("else")),
+            1,
+            "else must be a direct child of if, tree was {doc:#?}"
+        );
+        // Each branch's content is wrapped in its own paragraph.
+        assert_eq!(count_children(if_node, &is_para), 2);
+    }
+
+    #[test]
+    fn inline_tag_sharing_a_line_stays_inline() {
+        // A tag with text on the same line is inline and must NOT be
+        // lifted to block level.
+        let src = "See {% tagref id=\"x\" /%} for details.\n";
+        let doc = parse(src, None).unwrap();
+        // The tagref sits inside the single paragraph, not at doc root.
+        assert_eq!(count_children(&doc, &is_para), 1);
+        let para = doc.children.iter().find(|c| is_para(c)).unwrap();
+        assert_eq!(
+            count_children(para, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("tagref")),
+            1
+        );
+    }
+
+    #[test]
+    fn standalone_self_closing_tag_lifts_to_block() {
+        // A self-closing tag alone in its own paragraph becomes a
+        // block-level node with the empty paragraph dropped.
+        let src = "Before.\n\n{% partial file=\"x.markdoc\" /%}\n\nAfter.\n";
+        let doc = parse(src, None).unwrap();
+        let partial = tag_named(&doc, "partial").expect("partial present");
+        // partial is a direct child of the document, between two paragraphs.
+        assert_eq!(
+            count_children(&doc, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("partial")),
+            1
+        );
+        assert!(partial.children.is_empty());
+        assert_eq!(count_children(&doc, &is_para), 2);
     }
 
     #[test]
