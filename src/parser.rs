@@ -297,7 +297,19 @@ fn create_node_from_token(token_type: &TokenType, line: usize, args: &ParserArgs
             (NodeType::List, attrs)
         }
         TokenType::Item => (NodeType::Item, HashMap::new()),
-        TokenType::Table => (NodeType::Table, HashMap::new()),
+        TokenType::Table(aligns) => {
+            let mut attrs = HashMap::new();
+            // Carry CommonMark per-column alignment (from the `:--`/`--:`
+            // delimiter row) so the renderer can align cells. Omitted when
+            // no column declares an explicit alignment.
+            if aligns.iter().any(|a| !a.is_empty()) {
+                attrs.insert(
+                    "align".to_string(),
+                    Scalar::Array(aligns.iter().cloned().map(Scalar::String).collect()),
+                );
+            }
+            (NodeType::Table, attrs)
+        }
         TokenType::TableHead => (NodeType::Thead, HashMap::new()),
         TokenType::TableRow => (NodeType::Tr, HashMap::new()),
         TokenType::TableCell => (NodeType::Td, HashMap::new()),
@@ -705,5 +717,32 @@ mod tests {
             leaked.is_none(),
             "HTML comment content must not render, tree was {doc2:#?}"
         );
+    }
+
+    #[test]
+    fn pipe_table_preserves_column_alignment() {
+        // The `:--`/`:-:`/`--:` delimiter row must survive as an `align`
+        // attribute on the table node so renderers can align columns.
+        let src = "| L | C | R |\n|:--|:-:|--:|\n| a | b | c |\n";
+        let doc = parse(src, None).unwrap();
+        let table = find(&doc, &|n| matches!(n.node_type, NodeType::Table)).expect("table present");
+        match table.attributes.get("align") {
+            Some(Scalar::Array(a)) => {
+                let names: Vec<&str> = a
+                    .iter()
+                    .filter_map(|s| match s {
+                        Scalar::String(x) => Some(x.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(names, vec!["left", "center", "right"]);
+            }
+            other => panic!("expected an align array, got {other:?}"),
+        }
+
+        // A table with no explicit alignment carries no `align` attribute.
+        let plain = parse("| A | B |\n|---|---|\n| a | b |\n", None).unwrap();
+        let t2 = find(&plain, &|n| matches!(n.node_type, NodeType::Table)).expect("table");
+        assert!(!t2.attributes.contains_key("align"));
     }
 }

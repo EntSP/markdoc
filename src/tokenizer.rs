@@ -1,7 +1,20 @@
 use crate::tag_parser::{ParsedTag, TagKind};
 use pulldown_cmark::{
-    CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag as CmarkTag, TagEnd,
+    Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag as CmarkTag, TagEnd,
 };
+
+/// Name a CommonMark column alignment for storage on the table node's
+/// `align` attribute. `None` (no explicit `:--`/`--:` marker) maps to an
+/// empty string so the renderer treats that column as default.
+fn align_name(a: &Alignment) -> String {
+    match a {
+        Alignment::Left => "left",
+        Alignment::Center => "center",
+        Alignment::Right => "right",
+        Alignment::None => "",
+    }
+    .to_string()
+}
 
 const SENTINEL_OPEN: char = '\u{E000}';
 const SENTINEL_CLOSE: char = '\u{E001}';
@@ -31,7 +44,7 @@ pub enum TokenType {
     CodeBlock(Option<String>),
     List(bool, Option<u64>), // ordered, start
     Item,
-    Table,
+    Table(Vec<String>), // per-column alignment names ("left"/"center"/"right"/"")
     TableHead,
     TableRow,
     TableCell,
@@ -159,7 +172,7 @@ impl Tokenizer {
             TagEnd::CodeBlock => Some(TokenType::CodeBlock(None)),
             TagEnd::List(_) => Some(TokenType::List(false, None)),
             TagEnd::Item => Some(TokenType::Item),
-            TagEnd::Table => Some(TokenType::Table),
+            TagEnd::Table => Some(TokenType::Table(Vec::new())),
             TagEnd::TableHead => Some(TokenType::TableHead),
             TagEnd::TableRow => Some(TokenType::TableRow),
             TagEnd::TableCell => Some(TokenType::TableCell),
@@ -208,7 +221,9 @@ impl Tokenizer {
                 }
             }
             CmarkTag::Item => Some(TokenType::Item),
-            CmarkTag::Table(_) => Some(TokenType::Table),
+            CmarkTag::Table(aligns) => {
+                Some(TokenType::Table(aligns.iter().map(align_name).collect()))
+            }
             CmarkTag::TableHead => Some(TokenType::TableHead),
             CmarkTag::TableRow => Some(TokenType::TableRow),
             CmarkTag::TableCell => Some(TokenType::TableCell),
