@@ -4,6 +4,7 @@ pub mod crossrefs;
 pub mod expression;
 pub mod frontmatter;
 pub mod functions;
+pub mod list_table;
 pub mod parser;
 pub mod partials;
 pub mod renderers;

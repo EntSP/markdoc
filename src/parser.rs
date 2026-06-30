@@ -20,16 +20,25 @@ pub fn parse(content: &str, args: Option<ParserArgs>) -> Result<Node> {
     // 1. Substitute inline variables (`{% $var.path %}`) at text level.
     let content_with_vars = tag_parser::replace_variables(&content_without_fm, &variables);
 
+    // 1b. Pre-extract Markdoc list-syntax `{% table %}` blocks. Their inner
+    //     `---`/`*` syntax must be parsed here, before pulldown-cmark mangles
+    //     it; each block becomes a placeholder spliced back in after parsing.
+    let (content_with_tables, list_tables) =
+        crate::list_table::extract_list_tables(&content_with_vars);
+
     // 2. Extract structural tags (`{% name attrs %}`, `{% /name %}`, etc.)
     //    into a side-table; replace each occurrence with a sentinel so the
     //    markdown tokenizer leaves them as opaque text. The tokenizer
     //    re-merges tag events back into the token stream.
-    let (content_with_sentinels, parsed_tags) = tag_parser::segment_with_tags(&content_with_vars);
+    let (content_with_sentinels, parsed_tags) = tag_parser::segment_with_tags(&content_with_tables);
 
     let tokenizer = Tokenizer::new();
     let tokens = tokenizer.tokenize_with_tags(&content_with_sentinels, &parsed_tags);
     let tokens = lift_block_tags(tokens);
     let mut doc = parse_tokens(tokens, args)?;
+
+    // Swap the list-table placeholders for their parsed `Table` nodes.
+    crate::list_table::splice_list_tables(&mut doc, &list_tables);
 
     if let Some(fm) = frontmatter_data {
         doc.attributes
