@@ -234,8 +234,19 @@ fn parse_tokens(tokens: Vec<Token>, args: Option<ParserArgs>) -> Result<Node> {
                     parent.push(code_node);
                 }
             }
-            TokenEvent::Html(_) => {
-                // TODO Skip HTML for now
+            TokenEvent::Html(html) => {
+                // Markdoc has no raw-HTML support. Rather than silently
+                // dropping the markup — which loses literal placeholder
+                // text such as `<insert …>` — surface it as text so it
+                // renders verbatim. HTML comments stay hidden.
+                if !html.trim_start().starts_with("<!--")
+                    && let Some(parent) = stack.last_mut()
+                {
+                    let mut attrs = HashMap::new();
+                    attrs.insert("content".to_string(), Scalar::String(html));
+                    let text_node = Node::new(NodeType::Text, attrs, Vec::new(), None);
+                    parent.push(text_node);
+                }
             }
             TokenEvent::Tag(kind) => {
                 handle_tag_event(kind, &mut stack, line_num, &args);
@@ -659,6 +670,40 @@ mod tests {
         assert_eq!(
             text.attributes.get("content"),
             Some(&Scalar::String("Hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn raw_html_renders_as_literal_text_but_comments_stay_hidden() {
+        // Markdoc has no raw-HTML support, but an unrecognised tag-like
+        // token (a placeholder such as `<insert …>`) must survive as
+        // literal text instead of being silently dropped.
+        let doc = parse("Product: <insert list of robots and HW versions>\n", None).unwrap();
+        let kept = find(&doc, &|n| {
+            matches!(n.node_type, NodeType::Text)
+                && matches!(
+                    n.attributes.get("content"),
+                    Some(Scalar::String(s)) if s.contains("<insert list of robots and HW versions>")
+                )
+        });
+        assert!(
+            kept.is_some(),
+            "raw `<insert …>` should survive as literal text, tree was {doc:#?}"
+        );
+
+        // HTML comments, by contrast, must stay hidden — their content
+        // must never leak into the rendered text.
+        let doc2 = parse("Before <!-- secret note --> after.\n", None).unwrap();
+        let leaked = find(&doc2, &|n| {
+            matches!(n.node_type, NodeType::Text)
+                && matches!(
+                    n.attributes.get("content"),
+                    Some(Scalar::String(s)) if s.contains("secret")
+                )
+        });
+        assert!(
+            leaked.is_none(),
+            "HTML comment content must not render, tree was {doc2:#?}"
         );
     }
 }

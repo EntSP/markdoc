@@ -104,7 +104,7 @@ impl Tokenizer {
                         position,
                     });
                 }
-                Event::Html(html) => {
+                Event::Html(html) | Event::InlineHtml(html) => {
                     push_text_with_tags_as_html(&mut tokens, &html, tags, position);
                 }
                 // Self-closing atoms — emit Start + End so the parser
