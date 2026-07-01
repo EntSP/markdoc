@@ -205,62 +205,75 @@ pub fn default_tags() -> HashMap<String, Schema> {
     //   {% media src="arca://abc-123?w=400&focus=0.5,0.3" alt="Front panel" /%}
     // Block form is also accepted, with body content treated as a caption:
     //   {% media src="..." %}**Figure 1**: front-panel layout{% /media %}
-    tags.insert(
-        "media".to_string(),
-        Schema {
-            render: None,
-            children: None,
-            attributes: Some({
-                let mut attrs = HashMap::new();
-                attrs.insert(
+    let media_schema = Schema {
+        render: None,
+        children: None,
+        attributes: Some({
+            let mut attrs = HashMap::new();
+            attrs.insert(
                     "src".to_string(),
                     SchemaAttribute {
                         attr_type: Some(vec![ValidationType::String]),
                         render: None,
                         default: None,
-                        required: true,
+                        // Optional because `id` is an alternative locator; a
+                        // media reference must carry one of `src` or `id`.
+                        required: false,
                         description: Some(
-                            "Media URI. May carry transformation params interpreted by Arca."
+                            "Media URI (alternative to `id`). May carry transformation params interpreted by Arca."
                                 .to_string(),
                         ),
                     },
                 );
-                attrs.insert(
-                    "alt".to_string(),
+            attrs.insert(
+                    "id".to_string(),
                     SchemaAttribute {
                         attr_type: Some(vec![ValidationType::String]),
                         render: None,
                         default: None,
                         required: false,
                         description: Some(
-                            "Accessibility / fallback text describing the media".to_string(),
-                        ),
-                    },
-                );
-                attrs.insert(
-                    "caption".to_string(),
-                    SchemaAttribute {
-                        attr_type: Some(vec![ValidationType::String]),
-                        render: None,
-                        default: None,
-                        required: false,
-                        description: Some("Visible caption rendered alongside the media".into()),
-                    },
-                );
-                attrs.insert(
-                    "kind".to_string(),
-                    SchemaAttribute {
-                        attr_type: Some(vec![ValidationType::String]),
-                        render: None,
-                        default: None,
-                        required: false,
-                        description: Some(
-                            "Optional type hint: image | vector | animation | video | audio | model"
+                            "Arca asset id (alternative to `src`). Scriptor rewrites it to a concrete `src` before render; locally, markdoc-pdf resolves it to a file named `<id>.<ext>` under the assets root."
                                 .into(),
                         ),
                     },
                 );
-                attrs.insert(
+            attrs.insert(
+                "alt".to_string(),
+                SchemaAttribute {
+                    attr_type: Some(vec![ValidationType::String]),
+                    render: None,
+                    default: None,
+                    required: false,
+                    description: Some(
+                        "Accessibility / fallback text describing the media".to_string(),
+                    ),
+                },
+            );
+            attrs.insert(
+                "caption".to_string(),
+                SchemaAttribute {
+                    attr_type: Some(vec![ValidationType::String]),
+                    render: None,
+                    default: None,
+                    required: false,
+                    description: Some("Visible caption rendered alongside the media".into()),
+                },
+            );
+            attrs.insert(
+                "kind".to_string(),
+                SchemaAttribute {
+                    attr_type: Some(vec![ValidationType::String]),
+                    render: None,
+                    default: None,
+                    required: false,
+                    description: Some(
+                        "Optional type hint: image | vector | animation | video | audio | model"
+                            .into(),
+                    ),
+                },
+            );
+            attrs.insert(
                     "side".to_string(),
                     SchemaAttribute {
                         attr_type: Some(vec![ValidationType::String]),
@@ -273,7 +286,7 @@ pub fn default_tags() -> HashMap<String, Schema> {
                         ),
                     },
                 );
-                attrs.insert(
+            attrs.insert(
                     "width".to_string(),
                     SchemaAttribute {
                         attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
@@ -286,15 +299,22 @@ pub fn default_tags() -> HashMap<String, Schema> {
                         ),
                     },
                 );
-                attrs
-            }),
-            self_closing: true,
-            inline: false,
-            description: Some(
-                "Media reference (image, video, audio, 3D model, animation, etc.)".into(),
-            ),
-        },
-    );
+            attrs
+        }),
+        self_closing: true,
+        inline: false,
+        description: Some(
+            "Media reference (image, video, audio, 3D model, animation, etc.)".into(),
+        ),
+    };
+    // `img` is an alias so `{% img … /%}` and markdown images share the media
+    // contract (both dispatch to the same renderer path).
+    tags.insert("img".to_string(), {
+        let mut s = media_schema.clone();
+        s.description = Some("Image reference (alias of `media`)".to_string());
+        s
+    });
+    tags.insert("media".to_string(), media_schema);
 
     // ── tagref (anchor reference) ───────────────────────────────────────
     tags.insert(
@@ -806,7 +826,11 @@ mod tests {
         let cfg = Config::default();
         let media = cfg.tags.get("media").expect("media tag registered");
         let attrs = media.attributes.as_ref().unwrap();
-        assert!(attrs.get("src").unwrap().required);
+        // `src` is optional now — a reference may instead carry `id`.
+        assert!(!attrs.get("src").unwrap().required);
+        assert!(!attrs.get("id").unwrap().required);
+        // `img` is registered as an alias of `media`.
+        assert!(cfg.tags.contains_key("img"));
         assert!(!attrs.get("alt").unwrap().required);
         assert!(!attrs.get("caption").unwrap().required);
         assert!(!attrs.get("kind").unwrap().required);
@@ -922,19 +946,21 @@ Inline {% color value=\"#c026d3\" %}pink{% /color %} text.\n";
     }
 
     #[test]
-    fn media_required_src_validated_when_missing() {
-        // Validator should flag a `media` tag without `src`.
+    fn media_accepts_id_instead_of_src() {
+        // `src` is optional now — a reference may instead carry `id` — so
+        // neither is flagged as missing. Holds for the `img` alias too.
         use crate::validator::validate;
-        let src = "{% media alt=\"oops no src\" /%}";
-        let doc = parse(src, None).unwrap();
-        let errors = validate(&doc, &Config::default());
-        let has_required = errors
-            .iter()
-            .any(|e| e.id == "missing-attribute" && e.message.contains("src"));
-        assert!(
-            has_required,
-            "expected missing-attribute error for src, got: {errors:?}"
-        );
+        for src in [
+            "{% media id=\"0a02bb82-1a68-4c5c-883f-406361e1235e\" /%}",
+            "{% img id=\"0a02bb82-1a68-4c5c-883f-406361e1235e\" /%}",
+        ] {
+            let doc = parse(src, None).unwrap();
+            let errors = validate(&doc, &Config::default());
+            assert!(
+                !errors.iter().any(|e| e.id == "missing-attribute"),
+                "{src} should validate without a missing-attribute error, got: {errors:?}"
+            );
+        }
     }
 
     #[test]
