@@ -59,7 +59,20 @@ fn transform_node(node: &Node, config: &Config, ctx: &Context) -> Result<Rendera
         // Return as scalar if appropriate
         if children.is_empty() {
             if let Some(Scalar::String(content)) = node.attributes.get("content") {
-                Ok(RenderableTreeNode::Scalar(Scalar::String(content.clone())))
+                // Inline `code` keeps its identity as a `code` tag (its text
+                // as a single child) so downstream renderers can style it —
+                // flattened to a bare string it would be indistinguishable
+                // from the surrounding prose. Other content-only nodes
+                // (e.g. `text`) still flatten.
+                if node.node_type == NodeType::Code {
+                    Ok(RenderableTreeNode::Tag(Box::new(Tag {
+                        name: "code".to_string(),
+                        attributes: HashMap::new(),
+                        children: vec![RenderableTreeNode::Scalar(Scalar::String(content.clone()))],
+                    })))
+                } else {
+                    Ok(RenderableTreeNode::Scalar(Scalar::String(content.clone())))
+                }
             } else {
                 Ok(RenderableTreeNode::Scalar(Scalar::Null))
             }
