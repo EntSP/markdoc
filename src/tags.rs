@@ -551,6 +551,144 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── input ───────────────────────────────────────────────────────────
+    // A form input field. Attributes mirror the HTML input attributes so
+    // they translate across renderers: the web maps them to a native
+    // `<input>` with full constraint validation; PDF draws a print form box
+    // (label + ruled field) since PDF/A forbids the JavaScript that dynamic
+    // field validation would need. Author-time validation here only checks
+    // the tag itself (attribute types); the field's own required/min/max
+    // rules are enforced when a user fills the rendered form, not in markdoc.
+    tags.insert(
+        "input".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "name".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: true,
+                        description: Some("Field identifier".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "type".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Input type: text (default) | number | email | tel | url | date | checkbox"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "label".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Human-readable label shown beside the field".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "required".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Boolean]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Whether a value must be supplied".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "value".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String, ValidationType::Number]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Default / pre-filled value".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "placeholder".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Placeholder hint shown in an empty field".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "min".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Minimum value (number / date types)".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "max".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Maximum value (number / date types)".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "minlength".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Minimum length in characters (text types)".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "maxlength".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Maximum length in characters (text types)".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "pattern".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Regular expression the value must match".to_string()),
+                    },
+                );
+                attrs
+            }),
+            self_closing: true,
+            inline: false,
+            description: Some(
+                "Form input field (HTML input on the web; a print form box in PDF)".to_string(),
+            ),
+        },
+    );
+
     tags
 }
 
@@ -715,6 +853,48 @@ Inline {% color value=\"#c026d3\" %}pink{% /color %} text.\n";
             .filter(|e| matches!(e.level, crate::types::ValidationLevel::Error))
             .collect();
         assert!(hard.is_empty(), "unexpected validation errors: {hard:?}");
+    }
+
+    #[test]
+    fn input_tag_schema_and_validation() {
+        let cfg = Config::default();
+        let input = cfg.tags.get("input").expect("input tag registered");
+        let attrs = input.attributes.as_ref().unwrap();
+        assert!(attrs["name"].required, "name is required");
+        for a in [
+            "type",
+            "required",
+            "min",
+            "max",
+            "minlength",
+            "maxlength",
+            "pattern",
+        ] {
+            assert!(!attrs[a].required, "input.{a} optional");
+        }
+        assert!(input.self_closing);
+
+        // A well-formed field validates clean.
+        let ok = parse(
+            "{% input name=\"qty\" type=\"number\" required=true min=1 max=100 maxlength=3 /%}\n",
+            None,
+        )
+        .unwrap();
+        assert!(
+            crate::validator::validate(&ok, &cfg)
+                .iter()
+                .all(|e| !matches!(e.level, crate::types::ValidationLevel::Error)),
+            "valid input should not error"
+        );
+
+        // Missing the required `name` is flagged.
+        let bad = parse("{% input type=\"text\" /%}\n", None).unwrap();
+        assert!(
+            crate::validator::validate(&bad, &cfg)
+                .iter()
+                .any(|e| e.id == "missing-attribute"),
+            "missing name should be flagged"
+        );
     }
 
     #[test]
