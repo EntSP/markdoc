@@ -28,6 +28,8 @@ pub enum Expression {
     Literal(Scalar),
     Variable(Vec<String>),
     Function { name: String, args: Vec<Expression> },
+    Array(Vec<Expression>),
+    Object(Vec<(String, Expression)>),
 }
 
 /// Evaluate an expression against a context using the given function impls.
@@ -48,6 +50,20 @@ pub fn evaluate(
                 .get(name)
                 .ok_or_else(|| MarkdocError::TransformError(format!("Unknown function: {name}")))?;
             f(&resolved)
+        }
+        Expression::Array(items) => {
+            let resolved = items
+                .iter()
+                .map(|e| evaluate(e, ctx, fns))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Scalar::Array(resolved))
+        }
+        Expression::Object(pairs) => {
+            let mut map = HashMap::new();
+            for (k, e) in pairs {
+                map.insert(k.clone(), evaluate(e, ctx, fns)?);
+            }
+            Ok(Scalar::Object(map))
         }
     }
 }
@@ -123,6 +139,8 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(b'$') => self.parse_variable(),
             Some(b'"') | Some(b'\'') => self.parse_string(),
+            Some(b'[') => self.parse_array(),
+            Some(b'{') => self.parse_object(),
             Some(c) if c.is_ascii_digit() || c == b'-' => self.parse_number(),
             Some(c) if c.is_ascii_alphabetic() || c == b'_' => self.parse_identifier_or_call(),
             Some(c) => Err(MarkdocError::ParseError(format!(
@@ -137,29 +155,78 @@ impl<'a> Parser<'a> {
 
     fn parse_variable(&mut self) -> Result<Expression> {
         self.pos += 1; // consume `$`
+        let first = self.parse_path_ident();
+        if first.is_empty() {
+            return Err(MarkdocError::ParseError("Empty variable name".into()));
+        }
+        let mut path = vec![first];
+        // Trailing `.key` and `[index]` / `["key"]` accessors. An index
+        // and a string key both reach `resolve_variable` as a path
+        // segment; a numeric segment indexes an array, a name keys an
+        // object.
+        loop {
+            match self.peek() {
+                Some(b'.') => {
+                    self.pos += 1;
+                    let seg = self.parse_path_ident();
+                    if seg.is_empty() {
+                        return Err(MarkdocError::ParseError(
+                            "Empty path segment after `.`".into(),
+                        ));
+                    }
+                    path.push(seg);
+                }
+                Some(b'[') => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    let seg = match self.peek() {
+                        Some(b'"') | Some(b'\'') => match self.parse_string()? {
+                            Expression::Literal(Scalar::String(s)) => s,
+                            _ => unreachable!(),
+                        },
+                        Some(c) if c.is_ascii_digit() => {
+                            let start = self.pos;
+                            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                                self.pos += 1;
+                            }
+                            std::str::from_utf8(&self.src[start..self.pos])
+                                .unwrap()
+                                .to_string()
+                        }
+                        _ => {
+                            return Err(MarkdocError::ParseError(
+                                "Expected index or quoted key inside `[...]`".into(),
+                            ));
+                        }
+                    };
+                    self.skip_ws();
+                    if self.peek() != Some(b']') {
+                        return Err(MarkdocError::ParseError(
+                            "Unterminated `[...]` accessor".into(),
+                        ));
+                    }
+                    self.pos += 1; // consume `]`
+                    path.push(seg);
+                }
+                _ => break,
+            }
+        }
+        Ok(Expression::Variable(path))
+    }
+
+    /// Consume an identifier segment (`[A-Za-z0-9_]*`) and return it.
+    fn parse_path_ident(&mut self) -> String {
         let start = self.pos;
         while let Some(c) = self.peek() {
-            if c.is_ascii_alphanumeric() || c == b'_' || c == b'.' {
+            if c.is_ascii_alphanumeric() || c == b'_' {
                 self.pos += 1;
             } else {
                 break;
             }
         }
-        if start == self.pos {
-            return Err(MarkdocError::ParseError("Empty variable name".into()));
-        }
-        let raw = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
-        let path = raw
-            .split('.')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect::<Vec<_>>();
-        if path.is_empty() {
-            return Err(MarkdocError::ParseError(
-                "Variable name has no segments".into(),
-            ));
-        }
-        Ok(Expression::Variable(path))
+        std::str::from_utf8(&self.src[start..self.pos])
+            .unwrap()
+            .to_string()
     }
 
     fn parse_string(&mut self) -> Result<Expression> {
@@ -249,6 +316,97 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Expression::Function { name, args })
+    }
+
+    fn parse_array(&mut self) -> Result<Expression> {
+        self.pos += 1; // consume `[`
+        let mut items = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b']') {
+                self.pos += 1;
+                break;
+            }
+            items.push(self.parse_expr()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b']') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => {
+                    return Err(MarkdocError::ParseError(
+                        "Expected `,` or `]` in array literal".into(),
+                    ));
+                }
+            }
+        }
+        Ok(Expression::Array(items))
+    }
+
+    fn parse_object(&mut self) -> Result<Expression> {
+        self.pos += 1; // consume `{`
+        let mut pairs = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'}') {
+                self.pos += 1;
+                break;
+            }
+            let key = self.parse_object_key()?;
+            self.skip_ws();
+            if self.peek() != Some(b':') {
+                return Err(MarkdocError::ParseError(
+                    "Expected `:` after object key".into(),
+                ));
+            }
+            self.pos += 1; // consume `:`
+            let value = self.parse_expr()?;
+            pairs.push((key, value));
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b'}') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => {
+                    return Err(MarkdocError::ParseError(
+                        "Expected `,` or `}` in object literal".into(),
+                    ));
+                }
+            }
+        }
+        Ok(Expression::Object(pairs))
+    }
+
+    /// Object keys are bare identifiers (`id`) or quoted strings (`"id"`).
+    fn parse_object_key(&mut self) -> Result<String> {
+        match self.peek() {
+            Some(b'"') | Some(b'\'') => match self.parse_string()? {
+                Expression::Literal(Scalar::String(s)) => Ok(s),
+                _ => unreachable!(),
+            },
+            Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = self.pos;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                Ok(std::str::from_utf8(&self.src[start..self.pos])
+                    .unwrap()
+                    .to_string())
+            }
+            _ => Err(MarkdocError::ParseError("Expected object key".into())),
+        }
     }
 }
 
@@ -375,5 +533,93 @@ mod tests {
         let ctx = Context::new();
         let e = parse_expression("nope($a)").unwrap();
         assert!(evaluate_default(&e, &ctx).is_err());
+    }
+
+    #[test]
+    fn resolves_array_index() {
+        let arr = Scalar::Array(vec![
+            Scalar::String("first".into()),
+            Scalar::String("second".into()),
+        ]);
+        let ctx = ctx_with(&[("a", arr)]);
+        assert_eq!(
+            evaluate_default(&parse_expression("$a[0]").unwrap(), &ctx).unwrap(),
+            Scalar::String("first".into())
+        );
+        assert_eq!(
+            evaluate_default(&parse_expression("$a[1]").unwrap(), &ctx).unwrap(),
+            Scalar::String("second".into())
+        );
+        // Out-of-range index → Null (tolerant lookup).
+        assert_eq!(
+            evaluate_default(&parse_expression("$a[9]").unwrap(), &ctx).unwrap(),
+            Scalar::Null
+        );
+    }
+
+    #[test]
+    fn resolves_bracket_string_key() {
+        // `$a["k"]` keys into an object, like `$a.k`.
+        let mut o = HashMap::new();
+        o.insert("k".to_string(), Scalar::Number(7.0));
+        let ctx = ctx_with(&[("a", Scalar::Object(o))]);
+        assert_eq!(
+            evaluate_default(&parse_expression(r#"$a["k"]"#).unwrap(), &ctx).unwrap(),
+            Scalar::Number(7.0)
+        );
+    }
+
+    #[test]
+    fn evaluates_array_literal() {
+        let ctx = Context::new();
+        let v = evaluate_default(&parse_expression("[1, 2, 3]").unwrap(), &ctx).unwrap();
+        assert_eq!(
+            v,
+            Scalar::Array(vec![
+                Scalar::Number(1.0),
+                Scalar::Number(2.0),
+                Scalar::Number(3.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn evaluates_object_literal_with_variable() {
+        // Bare-identifier key, mixed literal and variable values.
+        let ctx = ctx_with(&[("who", Scalar::String("Bob".into()))]);
+        let v =
+            evaluate_default(&parse_expression(r#"{id: "x", name: $who}"#).unwrap(), &ctx).unwrap();
+        let Scalar::Object(map) = v else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("id"), Some(&Scalar::String("x".into())));
+        assert_eq!(map.get("name"), Some(&Scalar::String("Bob".into())));
+    }
+
+    #[test]
+    fn default_function_uses_fallback_on_null() {
+        let ctx = Context::new();
+        // Missing first arg (Null) → fallback.
+        assert_eq!(
+            evaluate_default(
+                &parse_expression(r#"default($missing, "fb")"#).unwrap(),
+                &ctx
+            )
+            .unwrap(),
+            Scalar::String("fb".into())
+        );
+        // Present first arg → returned unchanged.
+        let ctx2 = ctx_with(&[("x", Scalar::String("here".into()))]);
+        assert_eq!(
+            evaluate_default(&parse_expression(r#"default($x, "fb")"#).unwrap(), &ctx2).unwrap(),
+            Scalar::String("here".into())
+        );
+    }
+
+    #[test]
+    fn debug_function_serializes_json() {
+        let ctx = Context::new();
+        let v = evaluate_default(&parse_expression(r#"debug("hi")"#).unwrap(), &ctx).unwrap();
+        assert_eq!(v, Scalar::String("\"hi\"".into()));
     }
 }

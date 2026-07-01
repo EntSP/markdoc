@@ -295,6 +295,13 @@ impl Context {
         for key in &path[1..] {
             current = match current {
                 Scalar::Object(map) => map.get(key).cloned().unwrap_or(Scalar::Null),
+                // Bracket / numeric access into an array: `$a[0]` reaches
+                // here as the path segment "0".
+                Scalar::Array(arr) => key
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| arr.get(i).cloned())
+                    .unwrap_or(Scalar::Null),
                 _ => return Scalar::Null,
             };
         }

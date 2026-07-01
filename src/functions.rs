@@ -54,6 +54,31 @@ pub fn default_functions() -> HashMap<String, (ConfigFunction, FunctionImpl)> {
         ),
     );
 
+    // default function — returns the fallback when the first argument is
+    // undefined (missing variables resolve to Null in this port).
+    functions.insert(
+        "default".to_string(),
+        (
+            ConfigFunction {
+                returns: None,
+                parameters: None,
+            },
+            default_value as FunctionImpl,
+        ),
+    );
+
+    // debug function — serialize the argument(s) as JSON for troubleshooting.
+    functions.insert(
+        "debug".to_string(),
+        (
+            ConfigFunction {
+                returns: None,
+                parameters: None,
+            },
+            debug_value as FunctionImpl,
+        ),
+    );
+
     functions
 }
 
@@ -93,6 +118,32 @@ fn not(args: &[Scalar]) -> Result<Scalar> {
     }
 
     Ok(Scalar::Boolean(!truthy(&args[0])))
+}
+
+fn default_value(args: &[Scalar]) -> Result<Scalar> {
+    if args.len() != 2 {
+        return Err(MarkdocError::TransformError(
+            "default requires exactly 2 arguments".to_string(),
+        ));
+    }
+    // Markdoc returns the second argument when the first is undefined.
+    // Missing variables resolve to Null here, so Null is the trigger.
+    Ok(match &args[0] {
+        Scalar::Null => args[1].clone(),
+        present => present.clone(),
+    })
+}
+
+fn debug_value(args: &[Scalar]) -> Result<Scalar> {
+    // Serialize for troubleshooting: a single argument as itself, several
+    // as a JSON array.
+    let json = if args.len() == 1 {
+        serde_json::to_string(&args[0])
+    } else {
+        serde_json::to_string(args)
+    }
+    .unwrap_or_else(|_| "null".to_string());
+    Ok(Scalar::String(json))
 }
 
 fn truthy(value: &Scalar) -> bool {

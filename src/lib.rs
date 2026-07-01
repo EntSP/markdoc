@@ -19,7 +19,7 @@ pub mod validator;
 pub use ast::{Function, Node, Variable};
 pub use conditionals::evaluate_conditionals;
 pub use crossrefs::{AnchorInfo, collect_anchors, resolve_crossrefs};
-pub use parser::parse;
+pub use parser::{parse, parse_with_variables};
 pub use partials::{FsPartialResolver, InMemoryPartialResolver, PartialResolver, expand_partials};
 pub use transformer::{transform, transform_with_context};
 pub use types::Context;

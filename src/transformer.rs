@@ -227,7 +227,9 @@ fn should_render_as_tag(node: &Node, schema: &Option<Schema>) -> bool {
             | NodeType::Image
             | NodeType::Em
             | NodeType::Strong
+            | NodeType::Strikethrough
             | NodeType::Fence
+            | NodeType::Hr
             // Soft and hard breaks must survive transform so downstream
             // renderers can decide their semantics — a soft break is
             // typically a space, a hard break a forced line break.

@@ -6,15 +6,31 @@ use crate::types::*;
 use std::collections::HashMap;
 
 pub fn parse(content: &str, args: Option<ParserArgs>) -> Result<Node> {
+    parse_with_variables(content, args, &HashMap::new())
+}
+
+/// Like [`parse`], but seeds the text-interpolation variable scope with
+/// caller-supplied top-level variables (e.g. CLI `--var key=value`) in
+/// addition to the document's own `$markdoc.frontmatter.*`.
+pub fn parse_with_variables(
+    content: &str,
+    args: Option<ParserArgs>,
+    extra_variables: &HashMap<String, Scalar>,
+) -> Result<Node> {
     // Extract frontmatter.
     let (frontmatter_data, content_without_fm) = frontmatter::extract_frontmatter(content)?;
 
-    // Build the variable map used for inline `{% $var %}` substitution.
+    // Build the variable map used for inline `{% … %}` interpolation.
     let mut variables = HashMap::new();
     if let Some(fm) = &frontmatter_data {
         let mut markdoc = HashMap::new();
         markdoc.insert("frontmatter".to_string(), Scalar::Object(fm.clone()));
         variables.insert("markdoc".to_string(), Scalar::Object(markdoc));
+    }
+    // Caller-supplied top-level variables (`$key`), added without clobbering
+    // the `markdoc` namespace.
+    for (k, v) in extra_variables {
+        variables.entry(k.clone()).or_insert_with(|| v.clone());
     }
 
     // 1. Substitute inline variables (`{% $var.path %}`) at text level.

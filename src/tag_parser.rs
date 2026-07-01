@@ -260,20 +260,31 @@ fn consume_value(s: &str) -> (AttrValue, usize) {
         return (value, leading_ws + 1 + end + 1);
     }
 
-    // Bare token: extends until whitespace at depth 0. Function calls
-    // continue across balanced parens.
+    // Bare token: extends until whitespace at bracket-depth 0. Function
+    // calls and array / object literals continue across balanced
+    // ()/[]/{}, and whitespace inside a quoted string doesn't end the token.
     let mut depth: i32 = 0;
     let mut end = 0usize;
+    let mut quote: Option<char> = None;
     for (i, c) in s_trim.char_indices() {
-        if c == '(' {
-            depth += 1;
-        } else if c == ')' {
-            if depth == 0 {
-                break;
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
             }
-            depth -= 1;
-        } else if depth == 0 && c.is_ascii_whitespace() {
-            break;
+            end = i + c.len_utf8();
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            _ if depth == 0 && c.is_ascii_whitespace() => break,
+            _ => {}
         }
         end = i + c.len_utf8();
     }
@@ -292,7 +303,13 @@ fn parse_attr_value(token: &str) -> AttrValue {
     if let Ok(n) = token.parse::<f64>() {
         return AttrValue::Literal(Scalar::Number(n));
     }
-    if token.starts_with('$') || token.contains('(') {
+    // Variables, function calls, and array / object literals are all
+    // resolved by the expression evaluator at transform time.
+    if token.starts_with('$')
+        || token.starts_with('[')
+        || token.starts_with('{')
+        || token.contains('(')
+    {
         AttrValue::Expression(token.to_string())
     } else {
         // Unquoted bare word → string literal.
@@ -334,38 +351,61 @@ pub fn extract_variables(content: &str) -> Vec<VariableMatch> {
 }
 
 pub fn replace_variables(content: &str, variables: &HashMap<String, Scalar>) -> String {
-    let var_matches = extract_variables(content);
-    if var_matches.is_empty() {
-        return content.to_string();
-    }
-
+    // Interpolate `{% <expression> %}` spans: variables (`$a.b[0]`),
+    // function calls (`default($x, "y")`, `debug($x)`), and literals.
+    // Anything that doesn't read as an interpolation — structural tags
+    // (`{% if %}`, `{% /table %}`), annotations (`{% #id %}`), and
+    // list-table cell annotations — is left untouched for the tag
+    // machinery downstream.
+    let ctx = crate::types::Context {
+        variables: variables.clone(),
+    };
     let mut result = String::new();
-    let mut last_pos = 0;
-    for var_match in var_matches {
-        result.push_str(&content[last_pos..var_match.start]);
-        let value = get_variable_value(variables, &var_match.path);
-        result.push_str(&scalar_to_string(&value));
-        last_pos = var_match.end;
+    let mut rest = content;
+    while let Some(open) = rest.find("{%") {
+        result.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close_rel) = after_open.find("%}") else {
+            // No closing delimiter — emit the remainder verbatim.
+            result.push_str(&rest[open..]);
+            return result;
+        };
+        let span_end = open + 2 + close_rel + 2;
+        let inner = after_open[..close_rel].trim();
+        if is_interpolation(inner)
+            && let Ok(expr) = crate::expression::parse_expression(inner)
+        {
+            // On a successful evaluation, substitute the stringified value;
+            // on an evaluation error (e.g. unknown function) drop the span
+            // rather than leak `{% … %}` into the rendered text.
+            if let Ok(value) = crate::expression::evaluate_default(&expr, &ctx) {
+                result.push_str(&scalar_to_string(&value));
+            }
+        } else {
+            // Not an interpolation — keep the literal span for the tag pass.
+            result.push_str(&rest[open..span_end]);
+        }
+        rest = &rest[span_end..];
     }
-    result.push_str(&content[last_pos..]);
+    result.push_str(rest);
     result
 }
 
-fn get_variable_value(variables: &HashMap<String, Scalar>, path: &str) -> Scalar {
-    let parts: Vec<&str> = path.split('.').collect();
-    if parts.is_empty() {
-        return Scalar::Null;
+/// True when a `{% … %}` body should be evaluated as an interpolation
+/// (a `$variable…` reference or a `name(...)` function call) rather than
+/// treated as a structural tag or annotation.
+fn is_interpolation(inner: &str) -> bool {
+    let inner = inner.trim_start();
+    if inner.starts_with('$') {
+        return true;
     }
-    let mut current = variables.get(parts[0]).cloned().unwrap_or(Scalar::Null);
-    for part in &parts[1..] {
-        match current {
-            Scalar::Object(ref map) => {
-                current = map.get(*part).cloned().unwrap_or(Scalar::Null);
-            }
-            _ => return Scalar::Null,
-        }
-    }
-    current
+    // `name(` — a function call. (Tags like `if $x` have a space, not `(`.)
+    matches!(
+        inner.split_once('('),
+        Some((head, _))
+            if !head.is_empty()
+                && head.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    )
 }
 
 fn scalar_to_string(scalar: &Scalar) -> String {
@@ -394,6 +434,27 @@ mod tests {
         let vars = extract_variables(content);
         assert_eq!(vars.len(), 1);
         assert_eq!(vars[0].path, "markdoc.frontmatter.title");
+    }
+
+    #[test]
+    fn parses_array_and_object_literal_attrs() {
+        let (_, tags) = segment_with_tags(r#"{% point coords=[1, 2, 3] meta={id: "x"} /%}"#);
+        assert_eq!(tags.len(), 1);
+        let TagKind::SelfClose { name, attrs } = &tags[0].kind else {
+            panic!("expected self-closing tag, got {:?}", tags[0].kind);
+        };
+        assert_eq!(name, "point");
+        // Array / object literals are captured whole (whitespace inside the
+        // brackets doesn't end the token) and routed to the expression
+        // evaluator at transform time.
+        match attrs.named.get("coords").unwrap() {
+            AttrValue::Expression(s) => assert_eq!(s, "[1, 2, 3]"),
+            v => panic!("expected expression, got {v:?}"),
+        }
+        match attrs.named.get("meta").unwrap() {
+            AttrValue::Expression(s) => assert_eq!(s, r#"{id: "x"}"#),
+            v => panic!("expected expression, got {v:?}"),
+        }
     }
 
     #[test]
