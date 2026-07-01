@@ -5,6 +5,11 @@ use crate::tokenizer::{Token, TokenEvent, TokenType, Tokenizer};
 use crate::types::*;
 use std::collections::HashMap;
 
+/// Private-use sentinel standing in for an escaped `\{%` while the tag
+/// scanners run, so they don't treat it as a tag opener. Restored to a
+/// literal `{%` in node content by [`unescape_tag_literals`] afterwards.
+const ESCAPED_TAG_OPEN: &str = "\u{E010}";
+
 pub fn parse(content: &str, args: Option<ParserArgs>) -> Result<Node> {
     parse_with_variables(content, args, &HashMap::new())
 }
@@ -19,6 +24,11 @@ pub fn parse_with_variables(
 ) -> Result<Node> {
     // Extract frontmatter.
     let (frontmatter_data, content_without_fm) = frontmatter::extract_frontmatter(content)?;
+
+    // Neutralise escaped tag openers (`\{%`) before any tag scanner runs, so
+    // they are never treated as tags. The sentinel is restored to a literal
+    // `{%` in node content after parsing (`unescape_tag_literals`).
+    let content_without_fm = content_without_fm.replace("\\{%", ESCAPED_TAG_OPEN);
 
     // Build the variable map used for inline `{% … %}` interpolation.
     let mut variables = HashMap::new();
@@ -56,12 +66,29 @@ pub fn parse_with_variables(
     // Swap the list-table placeholders for their parsed `Table` nodes.
     crate::list_table::splice_list_tables(&mut doc, &list_tables);
 
+    // Restore escaped `\{%` (now the sentinel) to a literal `{%` in text and
+    // code content, after every tag scanner has run.
+    unescape_tag_literals(&mut doc);
+
     if let Some(fm) = frontmatter_data {
         doc.attributes
             .insert("frontmatter".to_string(), Scalar::Object(fm));
     }
 
     Ok(doc)
+}
+
+/// Restore escaped tag openers ([`ESCAPED_TAG_OPEN`]) to a literal `{%` in
+/// every node's text `content`, after the tag scanners have run.
+fn unescape_tag_literals(node: &mut Node) {
+    if let Some(Scalar::String(s)) = node.attributes.get_mut("content")
+        && s.contains(ESCAPED_TAG_OPEN)
+    {
+        *s = s.replace(ESCAPED_TAG_OPEN, "{%");
+    }
+    for child in &mut node.children {
+        unescape_tag_literals(child);
+    }
 }
 
 /// Lift block-level Markdoc tags out of the paragraphs pulldown-cmark
@@ -527,6 +554,43 @@ mod tests {
         assert_eq!(
             text.attributes.get("content"),
             Some(&Scalar::String("bold".to_string()))
+        );
+    }
+
+    #[test]
+    fn escaped_tag_opener_stays_literal() {
+        // `\{%` escapes a tag opener: it stays literal text (in prose and
+        // inside inline code) and is never parsed as a tag, while a real
+        // unescaped tag beside it still parses.
+        let src = "a \\{% if $x %} b and `\\{% c %}`\n\n{% callout %}\nreal\n{% /callout %}";
+        let doc = parse(src, None).unwrap();
+
+        // Prose keeps the literal `{% if $x %}`.
+        assert!(
+            find(&doc, &|n| matches!(n.node_type, NodeType::Text)
+                && matches!(n.attributes.get("content"),
+                    Some(Scalar::String(s)) if s.contains("{% if $x %}")))
+            .is_some(),
+            "escaped opener should stay literal in prose: {doc:#?}"
+        );
+
+        // Inline code keeps the literal `{% c %}` as its content.
+        let code = find(&doc, &|n| matches!(n.node_type, NodeType::Code)).expect("inline code");
+        assert_eq!(
+            code.attributes.get("content"),
+            Some(&Scalar::String("{% c %}".to_string()))
+        );
+
+        // The escaped openers produced no tag; the real callout still did.
+        assert!(
+            find(&doc, &|n| n.tag.as_deref() == Some("if")
+                || n.tag.as_deref() == Some("c"))
+            .is_none(),
+            "escaped openers must not become tags: {doc:#?}"
+        );
+        assert!(
+            find(&doc, &|n| n.tag.as_deref() == Some("callout")).is_some(),
+            "real callout tag must still parse: {doc:#?}"
         );
     }
 
