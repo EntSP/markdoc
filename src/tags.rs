@@ -260,6 +260,32 @@ pub fn default_tags() -> HashMap<String, Schema> {
                         ),
                     },
                 );
+                attrs.insert(
+                    "side".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "When placed inside a `{% float %}`, the side to float this image to: left or right"
+                                .into(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "width".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Display width — a fraction \u{2264} 1 of the column, a length, or a \"NN%\" string"
+                                .into(),
+                        ),
+                    },
+                );
                 attrs
             }),
             self_closing: true,
@@ -316,6 +342,212 @@ pub fn default_tags() -> HashMap<String, Schema> {
             self_closing: true,
             inline: true,
             description: Some("Named anchor reference".to_string()),
+        },
+    );
+
+    // ── columns ─────────────────────────────────────────────────────────
+    // Side-by-side layout: each child (a list item or a blank-line
+    // separated block) becomes one column. A pure layout primitive —
+    // renderers map it to their medium (parley table in PDF, flexbox/grid
+    // on the web). No attribute is required.
+    tags.insert(
+        "columns".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "widths".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String, ValidationType::Array]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Relative column widths, e.g. \"2 1\" or [2, 1]; equal if omitted"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "gap".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Space between columns, in points (default 16)".to_string(),
+                        ),
+                    },
+                );
+                attrs
+            }),
+            self_closing: false,
+            inline: false,
+            description: Some("Side-by-side columns".to_string()),
+        },
+    );
+
+    // ── float ───────────────────────────────────────────────────────────
+    // Float an image to one side with content wrapping around it. With
+    // inline `{% media side=… /%}` markers in the body it becomes a
+    // multi-image "magazine" wrap (several floats anchored where they
+    // appear in the prose). Units are interpreted by each renderer
+    // (points in PDF, CSS length on the web); page-break behaviour is a
+    // renderer concern, not part of this contract.
+    tags.insert(
+        "float".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "side".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Which side the image floats to: left (default) or right".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "width".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Image width — a fraction \u{2264} 1 of the column, a length, or a \"NN%\" string (default 40%)"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "gap".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Space between the image and the wrapped content (default 14)"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs
+            }),
+            self_closing: false,
+            inline: false,
+            description: Some("Float an image with content wrapping around it".to_string()),
+        },
+    );
+
+    // ── color / c ───────────────────────────────────────────────────────
+    // Inline coloured text span. `c` is a shorthand alias.
+    let color_schema = |alias: bool| Schema {
+        render: None,
+        children: None,
+        attributes: Some({
+            let mut attrs = HashMap::new();
+            attrs.insert(
+                "value".to_string(),
+                SchemaAttribute {
+                    attr_type: Some(vec![ValidationType::String]),
+                    render: None,
+                    default: None,
+                    required: false,
+                    description: Some(
+                        "Colour: a #rgb / #rrggbb hex value or a named colour".to_string(),
+                    ),
+                },
+            );
+            attrs
+        }),
+        self_closing: false,
+        inline: true,
+        description: Some(if alias {
+            "Inline coloured text span (alias of `color`)".to_string()
+        } else {
+            "Inline coloured text span".to_string()
+        }),
+    };
+    tags.insert("color".to_string(), color_schema(false));
+    tags.insert("c".to_string(), color_schema(true));
+
+    // ── list ────────────────────────────────────────────────────────────
+    // A list with a custom marker style, wrapping ordinary list items.
+    tags.insert(
+        "list".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "type".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Marker style: checkmark | dash | none".to_string()),
+                    },
+                );
+                attrs
+            }),
+            self_closing: false,
+            inline: false,
+            description: Some("List with a custom marker style".to_string()),
+        },
+    );
+
+    // ── caption ─────────────────────────────────────────────────────────
+    // Caption text for an adjacent figure or table. Placed above (default)
+    // or below its target; the media tag's own `caption` attribute is the
+    // inline alternative for a single asset.
+    tags.insert(
+        "caption".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "position".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Placement relative to the figure/table: above (default) or below"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "color".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Colour for the caption text".to_string()),
+                    },
+                );
+                attrs
+            }),
+            self_closing: false,
+            inline: false,
+            description: Some("Caption for an adjacent figure or table".to_string()),
         },
     );
 
@@ -440,6 +672,49 @@ mod tests {
         assert!(!attrs.get("alt").unwrap().required);
         assert!(!attrs.get("caption").unwrap().required);
         assert!(!attrs.get("kind").unwrap().required);
+        // Gained for the `{% float %}` anchored/magazine mode.
+        assert!(!attrs.get("side").unwrap().required);
+        assert!(!attrs.get("width").unwrap().required);
+    }
+
+    #[test]
+    fn default_config_has_layout_tags_registered() {
+        let cfg = Config::default();
+        for name in ["columns", "float", "color", "c", "list", "caption"] {
+            assert!(cfg.tags.contains_key(name), "{name} tag registered");
+        }
+        // Float declares side/width/gap, all optional.
+        let fattrs = cfg.tags["float"].attributes.as_ref().unwrap();
+        for a in ["side", "width", "gap"] {
+            assert!(!fattrs.get(a).unwrap().required, "float.{a} optional");
+        }
+        // columns is a block container, color is an inline span.
+        assert!(!cfg.tags["columns"].inline);
+        assert!(cfg.tags["color"].inline);
+        assert!(
+            cfg.tags["columns"]
+                .attributes
+                .as_ref()
+                .unwrap()
+                .contains_key("widths")
+        );
+    }
+
+    #[test]
+    fn layout_tags_validate_without_error() {
+        // A representative document using the layout tags must not raise any
+        // error-level validation issues against the default config.
+        let src = "\
+{% columns widths=\"2 1\" gap=16 %}\n* a\n* b\n{% /columns %}\n\n\
+{% float side=\"left\" width=120 %}\n{% media src=\"x.png\" /%}\n\ntext\n{% /float %}\n\n\
+Inline {% color value=\"#c026d3\" %}pink{% /color %} text.\n";
+        let doc = parse(src, None).unwrap();
+        let errors = crate::validator::validate(&doc, &Config::default());
+        let hard: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e.level, crate::types::ValidationLevel::Error))
+            .collect();
+        assert!(hard.is_empty(), "unexpected validation errors: {hard:?}");
     }
 
     #[test]
