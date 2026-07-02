@@ -300,6 +300,18 @@ pub fn default_tags() -> HashMap<String, Schema> {
                     },
                 );
             attrs.insert(
+                    "size".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Display size preset: small (50%) | medium (75%) | large (100%, default) of the available width".into(),
+                        ),
+                    },
+                );
+            attrs.insert(
                     "width".to_string(),
                     SchemaAttribute {
                         attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
@@ -307,7 +319,7 @@ pub fn default_tags() -> HashMap<String, Schema> {
                         default: None,
                         required: false,
                         description: Some(
-                            "Display width — a fraction \u{2264} 1 of the column, a length, or a \"NN%\" string"
+                            "Explicit width for a floated image (`{% float %}`) — a fraction \u{2264} 1 of the column, a length, or a \"NN%\" string. For general image sizing use `size`."
                                 .into(),
                         ),
                     },
@@ -851,6 +863,7 @@ mod tests {
         // Gained for the `{% float %}` anchored/magazine mode.
         assert!(!attrs.get("side").unwrap().required);
         assert!(!attrs.get("width").unwrap().required);
+        assert!(!attrs.get("size").unwrap().required);
     }
 
     #[test]
