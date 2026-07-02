@@ -598,6 +598,48 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── chip ────────────────────────────────────────────────────────────
+    // Inline colour chip / dot — the inline sibling of the block
+    // `{% swatch %}`. A small filled mark (circle by default, square via
+    // `shape`) tinted with `color`, flowing within running text. Solid
+    // only; renderers realise it as an inline styled span on the web.
+    tags.insert(
+        "chip".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "color".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Chip fill — any CSS colour, e.g. \"#ff0000\"".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "shape".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Chip shape: circle (default) | square".to_string()),
+                    },
+                );
+                attrs
+            }),
+            self_closing: true,
+            inline: true,
+            description: Some("Inline colour chip / dot".to_string()),
+        },
+    );
+
     // ── float ───────────────────────────────────────────────────────────
     // Float an image to one side with content wrapping around it. With
     // inline `{% media side=… /%}` markers in the body it becomes a
@@ -1033,7 +1075,7 @@ mod tests {
     fn default_config_has_layout_tags_registered() {
         let cfg = Config::default();
         for name in [
-            "columns", "grid", "swatch", "float", "color", "c", "list", "caption",
+            "columns", "grid", "swatch", "chip", "float", "color", "c", "list", "caption",
         ] {
             assert!(cfg.tags.contains_key(name), "{name} tag registered");
         }
@@ -1065,6 +1107,14 @@ mod tests {
             assert!(sattrs.contains_key(a), "swatch.{a} declared");
             assert!(!sattrs.get(a).unwrap().required, "swatch.{a} optional");
         }
+        // chip is the inline, self-closing sibling with colour / shape.
+        assert!(cfg.tags["chip"].inline);
+        assert!(cfg.tags["chip"].self_closing);
+        let chattrs = cfg.tags["chip"].attributes.as_ref().unwrap();
+        for a in ["color", "shape"] {
+            assert!(chattrs.contains_key(a), "chip.{a} declared");
+            assert!(!chattrs.get(a).unwrap().required, "chip.{a} optional");
+        }
     }
 
     #[test]
@@ -1076,7 +1126,7 @@ mod tests {
 {% grid min=120 gap=16 align=\"center\" %}\n* a\n* b\n* c\n{% /grid %}\n\n\
 {% swatch gradient=\"90deg, #fd7e14, #ffffff, #fd7e14\" height=5 /%}\n\n\
 {% float side=\"left\" width=120 %}\n{% media src=\"x.png\" /%}\n\ntext\n{% /float %}\n\n\
-Inline {% color value=\"#c026d3\" %}pink{% /color %} text.\n";
+Inline {% color value=\"#c026d3\" %}pink{% /color %} and a {% chip color=\"#ff0000\" /%} chip.\n";
         let doc = parse(src, None).unwrap();
         let errors = crate::validator::validate(&doc, &Config::default());
         let hard: Vec<_> = errors
