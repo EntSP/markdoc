@@ -533,6 +533,71 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── swatch ──────────────────────────────────────────────────────────
+    // A block colour bar / chip — solid (`color`) or a linear gradient
+    // (`gradient`). The block-level sibling of the inline `{% color %}`;
+    // renderers realise it as a filled box (CSS background on the web).
+    // Handy for legends, status keys, and indicator bars.
+    tags.insert(
+        "swatch".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "color".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Solid fill — any CSS colour, e.g. \"#ff0000\"".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "gradient".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Linear gradient fill: \"[Ndeg,] stop, stop, …\" — each stop a CSS colour (or transparent) with an optional NN% position; wins over color"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "height".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Bar height in points (default 6)".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "radius".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Corner radius in points (default 2)".to_string()),
+                    },
+                );
+                attrs
+            }),
+            self_closing: true,
+            inline: false,
+            description: Some("Colour swatch / bar — solid or linear-gradient fill".to_string()),
+        },
+    );
+
     // ── float ───────────────────────────────────────────────────────────
     // Float an image to one side with content wrapping around it. With
     // inline `{% media side=… /%}` markers in the body it becomes a
@@ -967,7 +1032,9 @@ mod tests {
     #[test]
     fn default_config_has_layout_tags_registered() {
         let cfg = Config::default();
-        for name in ["columns", "grid", "float", "color", "c", "list", "caption"] {
+        for name in [
+            "columns", "grid", "swatch", "float", "color", "c", "list", "caption",
+        ] {
             assert!(cfg.tags.contains_key(name), "{name} tag registered");
         }
         // Float declares side/width/gap, all optional.
@@ -990,6 +1057,14 @@ mod tests {
             assert!(gattrs.contains_key(a), "grid.{a} declared");
             assert!(!gattrs.get(a).unwrap().required, "grid.{a} optional");
         }
+        // swatch is a self-closing block with colour / gradient fill knobs.
+        assert!(!cfg.tags["swatch"].inline);
+        assert!(cfg.tags["swatch"].self_closing);
+        let sattrs = cfg.tags["swatch"].attributes.as_ref().unwrap();
+        for a in ["color", "gradient", "height", "radius"] {
+            assert!(sattrs.contains_key(a), "swatch.{a} declared");
+            assert!(!sattrs.get(a).unwrap().required, "swatch.{a} optional");
+        }
     }
 
     #[test]
@@ -999,6 +1074,7 @@ mod tests {
         let src = "\
 {% columns widths=\"2 1\" gap=16 align=\"center\" background=\"#f9f9f9\" %}\n* a\n* b\n{% /columns %}\n\n\
 {% grid min=120 gap=16 align=\"center\" %}\n* a\n* b\n* c\n{% /grid %}\n\n\
+{% swatch gradient=\"90deg, #fd7e14, #ffffff, #fd7e14\" height=5 /%}\n\n\
 {% float side=\"left\" width=120 %}\n{% media src=\"x.png\" /%}\n\ntext\n{% /float %}\n\n\
 Inline {% color value=\"#c026d3\" %}pink{% /color %} text.\n";
         let doc = parse(src, None).unwrap();
