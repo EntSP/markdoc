@@ -251,6 +251,19 @@ pub fn default_tags() -> HashMap<String, Schema> {
                 },
             );
             attrs.insert(
+                "title".to_string(),
+                SchemaAttribute {
+                    attr_type: Some(vec![ValidationType::String]),
+                    render: None,
+                    default: None,
+                    required: false,
+                    description: Some(
+                        "Advisory title (the HTML `title` / tooltip); markdown `![alt](url \"title\")` sets it. Renderers may use it as a caption / alt fallback."
+                            .to_string(),
+                    ),
+                },
+            );
+            attrs.insert(
                 "caption".to_string(),
                 SchemaAttribute {
                     attr_type: Some(vec![ValidationType::String]),
@@ -832,6 +845,7 @@ mod tests {
         // `img` is registered as an alias of `media`.
         assert!(cfg.tags.contains_key("img"));
         assert!(!attrs.get("alt").unwrap().required);
+        assert!(!attrs.get("title").unwrap().required);
         assert!(!attrs.get("caption").unwrap().required);
         assert!(!attrs.get("kind").unwrap().required);
         // Gained for the `{% float %}` anchored/magazine mode.
