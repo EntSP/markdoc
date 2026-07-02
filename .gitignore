@@ -2,3 +2,7 @@
 *.swp
 .DS_Store
 .env
+
+
+# Local scratch / private working material — never part of the crate.
+/EXTRA/
