@@ -427,11 +427,109 @@ pub fn default_tags() -> HashMap<String, Schema> {
                         ),
                     },
                 );
+                attrs.insert(
+                    "align".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Horizontal alignment of each column's content: left (default) | center | right"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "background".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Panel fill behind the columns — any CSS colour, e.g. \"#f9f9f9\""
+                                .to_string(),
+                        ),
+                    },
+                );
                 attrs
             }),
             self_closing: false,
             inline: false,
             description: Some("Side-by-side columns".to_string()),
+        },
+    );
+
+    // ── grid ────────────────────────────────────────────────────────────
+    // A responsive grid: cells (list items, or blank-line-separated blocks)
+    // reflow into as many equal columns as fit at `min` width, wrapping into
+    // rows — a pure layout primitive renderers map to their medium (CSS
+    // `repeat(auto-fill, minmax(min, 1fr))` on the web, a wrapped table in
+    // PDF). Use `{% columns %}` instead when you want a fixed single row.
+    tags.insert(
+        "grid".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "min".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Minimum column width in points; the grid fits as many equal columns as the width allows (default 120)"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "gap".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Space between cells, in points (default 16)".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "align".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Horizontal alignment of each cell's content: left (default) | center | right"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "background".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Panel fill behind the grid — any CSS colour, e.g. \"#f9f9f9\""
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs
+            }),
+            self_closing: false,
+            inline: false,
+            description: Some("Responsive grid — cells reflow into as many equal columns as fit".to_string()),
         },
     );
 
@@ -869,7 +967,7 @@ mod tests {
     #[test]
     fn default_config_has_layout_tags_registered() {
         let cfg = Config::default();
-        for name in ["columns", "float", "color", "c", "list", "caption"] {
+        for name in ["columns", "grid", "float", "color", "c", "list", "caption"] {
             assert!(cfg.tags.contains_key(name), "{name} tag registered");
         }
         // Float declares side/width/gap, all optional.
@@ -877,16 +975,21 @@ mod tests {
         for a in ["side", "width", "gap"] {
             assert!(!fattrs.get(a).unwrap().required, "float.{a} optional");
         }
-        // columns is a block container, color is an inline span.
+        // columns and grid are block containers, color is an inline span.
         assert!(!cfg.tags["columns"].inline);
+        assert!(!cfg.tags["grid"].inline);
         assert!(cfg.tags["color"].inline);
-        assert!(
-            cfg.tags["columns"]
-                .attributes
-                .as_ref()
-                .unwrap()
-                .contains_key("widths")
-        );
+        // columns carries widths plus the align / background cosmetics.
+        let cattrs = cfg.tags["columns"].attributes.as_ref().unwrap();
+        for a in ["widths", "align", "background"] {
+            assert!(cattrs.contains_key(a), "columns.{a} declared");
+        }
+        // grid carries the reflow `min` plus align / background.
+        let gattrs = cfg.tags["grid"].attributes.as_ref().unwrap();
+        for a in ["min", "gap", "align", "background"] {
+            assert!(gattrs.contains_key(a), "grid.{a} declared");
+            assert!(!gattrs.get(a).unwrap().required, "grid.{a} optional");
+        }
     }
 
     #[test]
@@ -894,7 +997,8 @@ mod tests {
         // A representative document using the layout tags must not raise any
         // error-level validation issues against the default config.
         let src = "\
-{% columns widths=\"2 1\" gap=16 %}\n* a\n* b\n{% /columns %}\n\n\
+{% columns widths=\"2 1\" gap=16 align=\"center\" background=\"#f9f9f9\" %}\n* a\n* b\n{% /columns %}\n\n\
+{% grid min=120 gap=16 align=\"center\" %}\n* a\n* b\n* c\n{% /grid %}\n\n\
 {% float side=\"left\" width=120 %}\n{% media src=\"x.png\" /%}\n\ntext\n{% /float %}\n\n\
 Inline {% color value=\"#c026d3\" %}pink{% /color %} text.\n";
         let doc = parse(src, None).unwrap();
