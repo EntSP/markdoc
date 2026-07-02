@@ -640,6 +640,112 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── qr ──────────────────────────────────────────────────────────────
+    // A QR code generated from `value` (any string — a URL, a document
+    // number, arbitrary text). A structural, output-agnostic tag: PDF draws
+    // the matrix, the web can render an <img> / <svg>. The other attributes
+    // are presentation hints renderers may honour.
+    tags.insert(
+        "qr".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "value".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String, ValidationType::Number]),
+                        render: None,
+                        default: None,
+                        required: true,
+                        description: Some(
+                            "The data to encode — a URL, document number, or any text".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "size".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Rendered side length in points (default 72)".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "ecl".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Error-correction level: low | medium (default) | quartile | high"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "align".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Horizontal placement: left (default) | center | right".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "color".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Module (foreground) colour, any CSS colour (default black)"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "background".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Field (background) colour, any CSS colour (default white)".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "quiet_zone".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::Number, ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Margin around the code, in modules (default 4)".to_string(),
+                        ),
+                    },
+                );
+                attrs
+            }),
+            self_closing: true,
+            inline: false,
+            description: Some("QR code generated from a value".to_string()),
+        },
+    );
+
     // ── float ───────────────────────────────────────────────────────────
     // Float an image to one side with content wrapping around it. With
     // inline `{% media side=… /%}` markers in the body it becomes a
@@ -1075,7 +1181,7 @@ mod tests {
     fn default_config_has_layout_tags_registered() {
         let cfg = Config::default();
         for name in [
-            "columns", "grid", "swatch", "chip", "float", "color", "c", "list", "caption",
+            "columns", "grid", "swatch", "chip", "qr", "float", "color", "c", "list", "caption",
         ] {
             assert!(cfg.tags.contains_key(name), "{name} tag registered");
         }
@@ -1115,6 +1221,15 @@ mod tests {
             assert!(chattrs.contains_key(a), "chip.{a} declared");
             assert!(!chattrs.get(a).unwrap().required, "chip.{a} optional");
         }
+        // qr is a self-closing block; `value` is required, the rest optional.
+        assert!(!cfg.tags["qr"].inline);
+        assert!(cfg.tags["qr"].self_closing);
+        let qattrs = cfg.tags["qr"].attributes.as_ref().unwrap();
+        assert!(qattrs["value"].required, "qr.value required");
+        for a in ["size", "ecl", "align", "color", "background", "quiet_zone"] {
+            assert!(qattrs.contains_key(a), "qr.{a} declared");
+            assert!(!qattrs.get(a).unwrap().required, "qr.{a} optional");
+        }
     }
 
     #[test]
@@ -1125,6 +1240,7 @@ mod tests {
 {% columns widths=\"2 1\" gap=16 align=\"center\" background=\"#f9f9f9\" %}\n* a\n* b\n{% /columns %}\n\n\
 {% grid min=120 gap=16 align=\"center\" %}\n* a\n* b\n* c\n{% /grid %}\n\n\
 {% swatch gradient=\"90deg, #fd7e14, #ffffff, #fd7e14\" height=5 /%}\n\n\
+{% qr value=\"HELLO-600123\" size=64 ecl=\"quartile\" /%}\n\n\
 {% float side=\"left\" width=120 %}\n{% media src=\"x.png\" /%}\n\ntext\n{% /float %}\n\n\
 Inline {% color value=\"#c026d3\" %}pink{% /color %} and a {% chip color=\"#ff0000\" /%} chip.\n";
         let doc = parse(src, None).unwrap();
