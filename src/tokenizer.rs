@@ -56,6 +56,10 @@ pub enum TokenType {
     Rule,
     LineBreak,
     SoftBreak,
+    /// CommonMark footnote reference `[^name]` (an inline atom).
+    FootnoteRef(String),
+    /// CommonMark footnote definition `[^name]: …` (a block wrapping its body).
+    FootnoteDef(String),
 }
 
 pub struct Tokenizer {
@@ -154,6 +158,21 @@ impl Tokenizer {
                         position,
                     });
                 }
+                // A `[^name]` reference — emit as a self-closing atom (Start
+                // + End) so the parse stack stays balanced. The definition it
+                // points at arrives as its own `FootnoteDefinition` block;
+                // `resolve_footnotes` later matches the two.
+                Event::FootnoteReference(name) => {
+                    let ft = TokenType::FootnoteRef(name.to_string());
+                    tokens.push(Token {
+                        event: TokenEvent::Start(ft.clone()),
+                        position,
+                    });
+                    tokens.push(Token {
+                        event: TokenEvent::End(ft),
+                        position,
+                    });
+                }
                 _ => continue,
             }
         }
@@ -181,6 +200,7 @@ impl Tokenizer {
             TagEnd::Strikethrough => Some(TokenType::Strikethrough),
             TagEnd::Link => Some(TokenType::Link(String::new(), String::new())),
             TagEnd::Image => Some(TokenType::Image(String::new(), String::new())),
+            TagEnd::FootnoteDefinition => Some(TokenType::FootnoteDef(String::new())),
             _ => None,
         }
     }
@@ -188,6 +208,7 @@ impl Tokenizer {
     fn convert_tag(&self, tag: &CmarkTag) -> Option<TokenType> {
         match tag {
             CmarkTag::Paragraph => Some(TokenType::Paragraph),
+            CmarkTag::FootnoteDefinition(name) => Some(TokenType::FootnoteDef(name.to_string())),
             CmarkTag::Heading { level, .. } => {
                 let h_level = match level {
                     HeadingLevel::H1 => 1,

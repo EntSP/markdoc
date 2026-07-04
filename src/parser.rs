@@ -387,9 +387,21 @@ fn create_node_from_token(token_type: &TokenType, line: usize, args: &ParserArgs
         TokenType::Rule => (NodeType::Hr, HashMap::new()),
         TokenType::LineBreak => (NodeType::Hardbreak, HashMap::new()),
         TokenType::SoftBreak => (NodeType::Softbreak, HashMap::new()),
+        // CommonMark footnotes — preserved as tag nodes carrying the label;
+        // `resolve_footnotes` matches references to definitions later.
+        TokenType::FootnoteRef(name) | TokenType::FootnoteDef(name) => {
+            let mut attrs = HashMap::new();
+            attrs.insert("name".to_string(), Scalar::String(name.clone()));
+            (NodeType::Tag, attrs)
+        }
     };
 
     let mut node = Node::new(node_type, attributes, Vec::new(), None);
+    match token_type {
+        TokenType::FootnoteRef(_) => node.tag = Some("footnote-ref".to_string()),
+        TokenType::FootnoteDef(_) => node.tag = Some("footnote-def".to_string()),
+        _ => {}
+    }
 
     if args.location {
         node.lines = vec![line];
