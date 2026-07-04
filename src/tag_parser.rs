@@ -1,7 +1,6 @@
 use crate::types::*;
 use indexmap::IndexMap;
 use regex::Regex;
-use std::collections::HashMap;
 use std::ops::Range;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -27,6 +26,10 @@ pub enum TagKind {
     SelfClose { name: String, attrs: TagAttrs },
     /// `{% #id %}` — heading-id sugar.
     HeadingId { id: String },
+    /// Inline interpolation `{% $var.path %}` or `{% func(args) %}` — the
+    /// raw expression source, evaluated against the `Context` at transform
+    /// time (the same path as tag-attribute expressions).
+    Interpolation { expr: String },
 }
 
 /// Tag attributes split into literal values and unresolved expressions.
@@ -97,6 +100,18 @@ fn parse_one_tag(raw: &str, source_range: Range<usize>) -> Option<ParsedTag> {
     let inner = raw.strip_prefix("{%")?.strip_suffix("%}")?.trim();
     if inner.is_empty() {
         return None;
+    }
+
+    // {% $var.path %} / {% func(args) %} — an inline interpolation, resolved
+    // at transform time. Checked before structural-tag parsing so a bare
+    // variable or function call never reads as a tag named `$…` / `func`.
+    if is_interpolation(inner) {
+        return Some(ParsedTag {
+            kind: TagKind::Interpolation {
+                expr: inner.to_string(),
+            },
+            source_range,
+        });
     }
 
     // {% #id %}
@@ -318,78 +333,15 @@ fn parse_attr_value(token: &str) -> AttrValue {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Inline variable interpolation — `{% $name.path %}`.
+// Inline variable interpolation — `{% $name.path %}` and `{% fn(...) %}`.
 //
-// Kept from the previous implementation; this runs as a text-level
-// substitution before tokenization and is independent of structural tag
-// handling. The two paths are disjoint because variable interpolation
-// requires `{%` to be immediately followed by `$`.
+// Detected here (`is_interpolation`) during segmentation and emitted as an
+// `Interpolation` tag. The value substitution itself happens later, at
+// transform time, against the evaluation `Context` — so a variable reads
+// the *composed* document's frontmatter, not just its own file's. That is
+// what lets `{% $markdoc.frontmatter.* %}` resolve inside a partial or a
+// stitched-in section, where the sub-file's own frontmatter is dropped.
 // ────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct VariableMatch {
-    pub path: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-pub fn extract_variables(content: &str) -> Vec<VariableMatch> {
-    let mut matches = Vec::new();
-    let var_regex = Regex::new(r"\{%\s*\$([a-zA-Z_][a-zA-Z0-9_.-]*)\s*%\}").unwrap();
-
-    for cap in var_regex.captures_iter(content) {
-        if let Some(var_path) = cap.get(1) {
-            let full_match = cap.get(0).unwrap();
-            matches.push(VariableMatch {
-                path: var_path.as_str().to_string(),
-                start: full_match.start(),
-                end: full_match.end(),
-            });
-        }
-    }
-    matches
-}
-
-pub fn replace_variables(content: &str, variables: &HashMap<String, Scalar>) -> String {
-    // Interpolate `{% <expression> %}` spans: variables (`$a.b[0]`),
-    // function calls (`default($x, "y")`, `debug($x)`), and literals.
-    // Anything that doesn't read as an interpolation — structural tags
-    // (`{% if %}`, `{% /table %}`), annotations (`{% #id %}`), and
-    // list-table cell annotations — is left untouched for the tag
-    // machinery downstream.
-    let ctx = crate::types::Context {
-        variables: variables.clone(),
-    };
-    let mut result = String::new();
-    let mut rest = content;
-    while let Some(open) = rest.find("{%") {
-        result.push_str(&rest[..open]);
-        let after_open = &rest[open + 2..];
-        let Some(close_rel) = after_open.find("%}") else {
-            // No closing delimiter — emit the remainder verbatim.
-            result.push_str(&rest[open..]);
-            return result;
-        };
-        let span_end = open + 2 + close_rel + 2;
-        let inner = after_open[..close_rel].trim();
-        if is_interpolation(inner)
-            && let Ok(expr) = crate::expression::parse_expression(inner)
-        {
-            // On a successful evaluation, substitute the stringified value;
-            // on an evaluation error (e.g. unknown function) drop the span
-            // rather than leak `{% … %}` into the rendered text.
-            if let Ok(value) = crate::expression::evaluate_default(&expr, &ctx) {
-                result.push_str(&scalar_to_string(&value));
-            }
-        } else {
-            // Not an interpolation — keep the literal span for the tag pass.
-            result.push_str(&rest[open..span_end]);
-        }
-        rest = &rest[span_end..];
-    }
-    result.push_str(rest);
-    result
-}
 
 /// True when a `{% … %}` body should be evaluated as an interpolation
 /// (a `$variable…` reference or a `name(...)` function call) rather than
@@ -408,16 +360,6 @@ fn is_interpolation(inner: &str) -> bool {
     )
 }
 
-fn scalar_to_string(scalar: &Scalar) -> String {
-    match scalar {
-        Scalar::String(s) => s.clone(),
-        Scalar::Number(n) => n.to_string(),
-        Scalar::Boolean(b) => b.to_string(),
-        Scalar::Null => String::new(),
-        Scalar::Array(_) | Scalar::Object(_) => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,14 +368,6 @@ mod tests {
         // Helper: extract just the rewritten text inside the sentinel
         // boundaries, so tests can assert sentinel placement abstractly.
         s
-    }
-
-    #[test]
-    fn extracts_variable() {
-        let content = "Title: {% $markdoc.frontmatter.title %}";
-        let vars = extract_variables(content);
-        assert_eq!(vars.len(), 1);
-        assert_eq!(vars[0].path, "markdoc.frontmatter.title");
     }
 
     #[test]
@@ -567,13 +501,17 @@ mod tests {
     }
 
     #[test]
-    fn ignores_inline_variable_interpolation() {
-        // `{% $x %}` is the inline-variable form; it should NOT be parsed
-        // as a structural tag (the leading char is `$`, not an identifier).
+    fn segments_inline_interpolation() {
+        // `{% $x %}` is now parsed into an Interpolation tag (resolved
+        // against the Context at transform time), not left as literal text.
         let (rewritten, tags) = segment_with_tags("Hello {% $name %}");
-        assert!(tags.is_empty());
-        assert_eq!(rewritten, "Hello {% $name %}");
-        // (replace_variables, run separately, will substitute it.)
+        assert_eq!(tags.len(), 1);
+        match &tags[0].kind {
+            TagKind::Interpolation { expr } => assert_eq!(expr, "$name"),
+            other => panic!("expected Interpolation, got {other:?}"),
+        }
+        assert!(rewritten.starts_with("Hello "));
+        assert_ne!(rewritten, "Hello {% $name %}");
     }
 
     #[test]

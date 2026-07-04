@@ -1,5 +1,6 @@
 use crate::ast::Node;
 use crate::expression::{evaluate_default, parse_expression};
+use crate::parser::INTERPOLATION_TAG;
 use crate::types::*;
 use std::collections::HashMap;
 
@@ -35,6 +36,22 @@ fn default_context_from(node: &Node) -> Context {
 }
 
 fn transform_node(node: &Node, config: &Config, ctx: &Context) -> Result<RenderableTreeNode> {
+    // Inline interpolation `{% $var %}` / `{% func(...) %}` — evaluate the
+    // captured expression against the context and emit the value as text. A
+    // parse / evaluation failure (e.g. unknown function) drops to empty
+    // rather than leaking the `{% … %}` source.
+    if node.tag.as_deref() == Some(INTERPOLATION_TAG) {
+        let value = node
+            .expressions
+            .get("primary")
+            .and_then(|src| parse_expression(src).ok())
+            .and_then(|expr| evaluate_default(&expr, ctx).ok())
+            .unwrap_or(Scalar::Null);
+        return Ok(RenderableTreeNode::Scalar(Scalar::String(
+            scalar_to_display(&value),
+        )));
+    }
+
     // Find schema for this node
     let schema = find_schema(node, config);
 
@@ -89,6 +106,19 @@ fn transform_node(node: &Node, config: &Config, ctx: &Context) -> Result<Rendera
                     .collect(),
             )))
         }
+    }
+}
+
+/// Flatten a resolved scalar to display text for inline interpolation.
+/// Whole-number floats (YAML integers) print without a trailing `.0`;
+/// arrays / objects / null contribute nothing.
+fn scalar_to_display(s: &Scalar) -> String {
+    match s {
+        Scalar::String(v) => v.clone(),
+        Scalar::Number(n) if n.is_finite() && n.fract() == 0.0 => format!("{}", *n as i64),
+        Scalar::Number(n) => n.to_string(),
+        Scalar::Boolean(b) => b.to_string(),
+        Scalar::Null | Scalar::Array(_) | Scalar::Object(_) => String::new(),
     }
 }
 
@@ -386,5 +416,42 @@ title: Hello
             Some(&Scalar::String("warning".to_string()))
         );
         assert_eq!(callout.attributes.get("count"), Some(&Scalar::Number(42.0)));
+    }
+
+    fn collect_text(node: &RenderableTreeNode, out: &mut String) {
+        match node {
+            RenderableTreeNode::Scalar(Scalar::String(s)) => out.push_str(s),
+            RenderableTreeNode::Tag(t) => {
+                for c in &t.children {
+                    collect_text(c, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn frontmatter_interpolation_resolves_at_transform() {
+        // `{% $markdoc.frontmatter.* %}` is an interpolation node after parse;
+        // `transform` builds a Context from the document's frontmatter and
+        // resolves it to text.
+        let src = "---\ntitle: Hello World\n---\n\n# {% $markdoc.frontmatter.title %}";
+        let doc = parse(src, None).unwrap();
+        let rendered = transform(&doc, &Config::default()).unwrap();
+        let mut text = String::new();
+        collect_text(&rendered, &mut text);
+        assert!(text.contains("Hello World"), "got: {text:?}");
+    }
+
+    #[test]
+    fn concat_interpolation_resolves_at_transform() {
+        // A function call in an interpolation resolves too — and a
+        // whole-number frontmatter value stringifies without a `.0`.
+        let src = "---\ndocumentNumber: 1234567\n---\n\n{% concat(\"id-\", $markdoc.frontmatter.documentNumber) %}";
+        let doc = parse(src, None).unwrap();
+        let rendered = transform(&doc, &Config::default()).unwrap();
+        let mut text = String::new();
+        collect_text(&rendered, &mut text);
+        assert!(text.contains("id-1234567"), "got: {text:?}");
     }
 }

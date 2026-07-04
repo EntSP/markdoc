@@ -11,17 +11,6 @@ use std::collections::HashMap;
 const ESCAPED_TAG_OPEN: &str = "\u{E010}";
 
 pub fn parse(content: &str, args: Option<ParserArgs>) -> Result<Node> {
-    parse_with_variables(content, args, &HashMap::new())
-}
-
-/// Like [`parse`], but seeds the text-interpolation variable scope with
-/// caller-supplied top-level variables (e.g. CLI `--var key=value`) in
-/// addition to the document's own `$markdoc.frontmatter.*`.
-pub fn parse_with_variables(
-    content: &str,
-    args: Option<ParserArgs>,
-    extra_variables: &HashMap<String, Scalar>,
-) -> Result<Node> {
     // Extract frontmatter.
     let (frontmatter_data, content_without_fm) = frontmatter::extract_frontmatter(content)?;
 
@@ -30,27 +19,16 @@ pub fn parse_with_variables(
     // `{%` in node content after parsing (`unescape_tag_literals`).
     let content_without_fm = content_without_fm.replace("\\{%", ESCAPED_TAG_OPEN);
 
-    // Build the variable map used for inline `{% … %}` interpolation.
-    let mut variables = HashMap::new();
-    if let Some(fm) = &frontmatter_data {
-        let mut markdoc = HashMap::new();
-        markdoc.insert("frontmatter".to_string(), Scalar::Object(fm.clone()));
-        variables.insert("markdoc".to_string(), Scalar::Object(markdoc));
-    }
-    // Caller-supplied top-level variables (`$key`), added without clobbering
-    // the `markdoc` namespace.
-    for (k, v) in extra_variables {
-        variables.entry(k.clone()).or_insert_with(|| v.clone());
-    }
+    // Inline `{% $var %}` / `{% func(...) %}` interpolation is parsed into
+    // interpolation nodes (by `segment_with_tags`) and resolved against the
+    // evaluation `Context` at transform time — the same path as tag-attribute
+    // expressions — so no text-level substitution happens here.
 
-    // 1. Substitute inline variables (`{% $var.path %}`) at text level.
-    let content_with_vars = tag_parser::replace_variables(&content_without_fm, &variables);
-
-    // 1b. Pre-extract Markdoc list-syntax `{% table %}` blocks. Their inner
-    //     `---`/`*` syntax must be parsed here, before pulldown-cmark mangles
-    //     it; each block becomes a placeholder spliced back in after parsing.
+    // 1. Pre-extract Markdoc list-syntax `{% table %}` blocks. Their inner
+    //    `---`/`*` syntax must be parsed here, before pulldown-cmark mangles
+    //    it; each block becomes a placeholder spliced back in after parsing.
     let (content_with_tables, list_tables) =
-        crate::list_table::extract_list_tables(&content_with_vars);
+        crate::list_table::extract_list_tables(&content_without_fm);
 
     // 2. Extract structural tags (`{% name attrs %}`, `{% /name %}`, etc.)
     //    into a side-table; replace each occurrence with a sentinel so the
@@ -455,8 +433,27 @@ fn handle_tag_event(kind: TagKind, stack: &mut Vec<Node>, line: usize, args: &Pa
             // No enclosing heading — silently drop. (The Markdoc spec
             // restricts this sugar to heading contexts.)
         }
+        TagKind::Interpolation { expr } => {
+            // An inline leaf carrying the expression under `primary`; the
+            // transformer evaluates it against the Context into text.
+            let mut node = Node::new(
+                NodeType::Tag,
+                HashMap::new(),
+                Vec::new(),
+                Some(INTERPOLATION_TAG.to_string()),
+            );
+            node.expressions.insert("primary".to_string(), expr);
+            node.inline = true;
+            if let Some(parent) = stack.last_mut() {
+                parent.push(node);
+            }
+        }
     }
 }
+
+/// Internal tag name for an inline interpolation node (`{% $var %}` /
+/// `{% func(...) %}`). Resolved to text by the transformer; never authored.
+pub(crate) const INTERPOLATION_TAG: &str = "$interpolation";
 
 /// Build a `Tag` node from parsed attributes, splitting them into the
 /// `attributes` map (literal scalars) and the `expressions` map (raw
@@ -773,16 +770,17 @@ mod tests {
     }
 
     #[test]
-    fn frontmatter_variable_interpolation_still_works() {
+    fn frontmatter_interpolation_parses_to_a_node() {
+        // `{% $markdoc.frontmatter.title %}` is captured as an interpolation
+        // node (resolved against the Context at transform time), not
+        // substituted during parse.
         let src = "---\ntitle: Hello\n---\n\n# {% $markdoc.frontmatter.title %}";
         let doc = parse(src, None).unwrap();
-        let heading =
-            find(&doc, &|n| matches!(n.node_type, NodeType::Heading)).expect("heading present");
-        let text =
-            find(heading, &|n| matches!(n.node_type, NodeType::Text)).expect("text in heading");
+        let node = find(&doc, &|n| n.tag.as_deref() == Some(INTERPOLATION_TAG))
+            .expect("interpolation node present");
         assert_eq!(
-            text.attributes.get("content"),
-            Some(&Scalar::String("Hello".to_string()))
+            node.expressions.get("primary").map(String::as_str),
+            Some("$markdoc.frontmatter.title")
         );
     }
 

@@ -19,7 +19,7 @@
 //! their evaluation context from the including document.
 
 use crate::ast::Node;
-use crate::parser::parse_with_variables;
+use crate::parser::parse;
 use crate::types::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -102,22 +102,8 @@ impl PartialResolver for InMemoryPartialResolver {
 /// with the parsed contents of the referenced file. Detects cycles in the
 /// include graph and reports the offending chain.
 pub fn expand_partials(node: &Node, resolver: &dyn PartialResolver) -> Result<Node> {
-    expand_partials_with_variables(node, resolver, &HashMap::new())
-}
-
-/// Like [`expand_partials`], but seeds each included file's inline
-/// `{% $var %}` interpolation scope with `extra_variables` (in addition to
-/// that file's own frontmatter). Passing the including document's
-/// `markdoc.frontmatter` lets a section / partial read
-/// `{% $markdoc.frontmatter.* %}` from the composing document — otherwise a
-/// partial only sees its own (usually absent) frontmatter.
-pub fn expand_partials_with_variables(
-    node: &Node,
-    resolver: &dyn PartialResolver,
-    extra_variables: &HashMap<String, Scalar>,
-) -> Result<Node> {
     let mut chain: Vec<PathBuf> = Vec::new();
-    let expanded = expand_node(node, resolver, &mut chain, extra_variables)?;
+    let expanded = expand_node(node, resolver, &mut chain)?;
     // The recursion returns Vec<Node> to allow splicing at partial positions.
     // At the top level we expect exactly one Document node; if a top-level
     // partial somehow expanded to multiple siblings, wrap them in a
@@ -138,14 +124,13 @@ fn expand_node(
     node: &Node,
     resolver: &dyn PartialResolver,
     chain: &mut Vec<PathBuf>,
-    extra: &HashMap<String, Scalar>,
 ) -> Result<Vec<Node>> {
     if is_partial_tag(node) {
-        return expand_partial_tag(node, resolver, chain, extra);
+        return expand_partial_tag(node, resolver, chain);
     }
     let mut new_children = Vec::with_capacity(node.children.len());
     for child in &node.children {
-        new_children.extend(expand_node(child, resolver, chain, extra)?);
+        new_children.extend(expand_node(child, resolver, chain)?);
     }
     let mut new_node = node.clone();
     new_node.children = new_children;
@@ -160,7 +145,6 @@ fn expand_partial_tag(
     node: &Node,
     resolver: &dyn PartialResolver,
     chain: &mut Vec<PathBuf>,
-    extra: &HashMap<String, Scalar>,
 ) -> Result<Vec<Node>> {
     let file = node
         .attributes
@@ -186,10 +170,10 @@ fn expand_partial_tag(
     }
 
     let source = resolver.load(&path)?;
-    let subdoc = parse_with_variables(&source, None, extra)?;
+    let subdoc = parse(&source, None)?;
 
     chain.push(canon);
-    let expanded = expand_node(&subdoc, resolver, chain, extra)?;
+    let expanded = expand_node(&subdoc, resolver, chain)?;
     chain.pop();
 
     // Splice the subdoc's CHILDREN (not the Document wrapper) at this
@@ -209,7 +193,6 @@ fn expand_partial_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse;
 
     fn count_text(node: &Node, needle: &str) -> usize {
         let mut n = 0;
@@ -248,33 +231,6 @@ mod tests {
         assert!(has_text(&expanded, "After"));
         // Partial tag must no longer appear after expansion.
         assert!(!has_tag(&expanded, "partial"));
-    }
-
-    #[test]
-    fn included_file_reads_composing_frontmatter() {
-        // A partial with no frontmatter of its own resolves
-        // `{% $markdoc.frontmatter.* %}` from the caller-supplied variables
-        // (the composing document's frontmatter).
-        let resolver = InMemoryPartialResolver::new()
-            .with("sec.md", "Doc: {% $markdoc.frontmatter.documentNumber %}.");
-        let root = parse("{% partial file=\"sec.md\" /%}", None).unwrap();
-
-        let mut fm = HashMap::new();
-        fm.insert("documentNumber".to_string(), Scalar::Number(1234567.0));
-        let mut markdoc = HashMap::new();
-        markdoc.insert("frontmatter".to_string(), Scalar::Object(fm));
-        let mut extra = HashMap::new();
-        extra.insert("markdoc".to_string(), Scalar::Object(markdoc));
-
-        let expanded = expand_partials_with_variables(&root, &resolver, &extra).unwrap();
-        assert!(
-            has_text(&expanded, "1234567"),
-            "interpolation should resolve"
-        );
-
-        // Without the caller variables, the same reference resolves to nothing.
-        let plain = expand_partials(&root, &resolver).unwrap();
-        assert!(!has_text(&plain, "1234567"));
     }
 
     #[test]
