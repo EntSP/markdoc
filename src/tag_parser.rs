@@ -261,18 +261,19 @@ fn consume_value(s: &str) -> (AttrValue, usize) {
         return (AttrValue::Literal(Scalar::Null), leading_ws);
     }
 
-    // Quoted string.
+    // Quoted string. A `{$var}` interpolation span turns it into an
+    // expression evaluated against the transform Context; a plain string
+    // stays a literal. Variable paths carry no quote characters, so the first
+    // matching quote is always the true string terminator.
     if let Some(rest) = s_trim.strip_prefix('"')
         && let Some(end) = rest.find('"')
     {
-        let value = AttrValue::Literal(Scalar::String(rest[..end].to_string()));
-        return (value, leading_ws + 1 + end + 1);
+        return (quoted_value(&rest[..end], '"'), leading_ws + 1 + end + 1);
     }
     if let Some(rest) = s_trim.strip_prefix('\'')
         && let Some(end) = rest.find('\'')
     {
-        let value = AttrValue::Literal(Scalar::String(rest[..end].to_string()));
-        return (value, leading_ws + 1 + end + 1);
+        return (quoted_value(&rest[..end], '\''), leading_ws + 1 + end + 1);
     }
 
     // Bare token: extends until whitespace at bracket-depth 0. Function
@@ -329,6 +330,19 @@ fn parse_attr_value(token: &str) -> AttrValue {
     } else {
         // Unquoted bare word → string literal.
         AttrValue::Literal(Scalar::String(token.to_string()))
+    }
+}
+
+/// A quoted attribute value. A string carrying a `{$var}` interpolation span
+/// becomes an expression (re-quoted for the expression parser, which turns it
+/// into an interpolation template resolved against the transform Context); a
+/// plain string stays a literal scalar. `inner` never contains `quote`, so
+/// re-wrapping in the same quote character is unambiguous.
+fn quoted_value(inner: &str, quote: char) -> AttrValue {
+    if crate::expression::contains_interpolation(inner) {
+        AttrValue::Expression(format!("{quote}{inner}{quote}"))
+    } else {
+        AttrValue::Literal(Scalar::String(inner.to_string()))
     }
 }
 

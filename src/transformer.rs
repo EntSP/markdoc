@@ -444,14 +444,14 @@ title: Hello
     }
 
     #[test]
-    fn concat_interpolation_resolves_at_transform() {
-        // A function call in an interpolation resolves too — and a
+    fn function_interpolation_resolves_at_transform() {
+        // A function call in an inline interpolation resolves too — and a
         // whole-number frontmatter value stringifies without a `.0`.
-        let src = "---\ndocumentNumber: 1234567\n---\n\n{% concat(\"id-\", $markdoc.frontmatter.documentNumber) %}";
+        let src = "---\ndocumentNumber: 1234567\n---\n\n{% default($markdoc.frontmatter.documentNumber, \"x\") %}";
         let doc = parse(src, None).unwrap();
         let rendered = transform(&doc, &Config::default()).unwrap();
         let mut text = String::new();
         collect_text(&rendered, &mut text);
-        assert!(text.contains("id-1234567"), "got: {text:?}");
+        assert!(text.contains("1234567"), "got: {text:?}");
     }
 }

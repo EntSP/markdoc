@@ -27,9 +27,18 @@ use std::sync::OnceLock;
 pub enum Expression {
     Literal(Scalar),
     Variable(Vec<String>),
-    Function { name: String, args: Vec<Expression> },
+    Function {
+        name: String,
+        args: Vec<Expression>,
+    },
     Array(Vec<Expression>),
     Object(Vec<(String, Expression)>),
+    /// A string literal carrying `{$var}` interpolation spans, e.g.
+    /// `"https://x/{$markdoc.frontmatter.documentNumber}"`. Evaluates by
+    /// stringifying each part and concatenating (whole numbers without a
+    /// trailing `.0`), so a value can be spliced into a URL without a
+    /// `concat(...)` call.
+    Interpolate(Vec<Expression>),
 }
 
 /// Evaluate an expression against a context using the given function impls.
@@ -64,6 +73,15 @@ pub fn evaluate(
                 map.insert(k.clone(), evaluate(e, ctx, fns)?);
             }
             Ok(Scalar::Object(map))
+        }
+        Expression::Interpolate(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                out.push_str(&crate::functions::scalar_to_plain_string(&evaluate(
+                    part, ctx, fns,
+                )?));
+            }
+            Ok(Scalar::String(out))
         }
     }
 }
@@ -180,10 +198,7 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     self.skip_ws();
                     let seg = match self.peek() {
-                        Some(b'"') | Some(b'\'') => match self.parse_string()? {
-                            Expression::Literal(Scalar::String(s)) => s,
-                            _ => unreachable!(),
-                        },
+                        Some(b'"') | Some(b'\'') => self.read_quoted()?,
                         Some(c) if c.is_ascii_digit() => {
                             let start = self.pos;
                             while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
@@ -229,7 +244,10 @@ impl<'a> Parser<'a> {
             .to_string()
     }
 
-    fn parse_string(&mut self) -> Result<Expression> {
+    /// Read a quoted string's raw contents (without the surrounding quotes),
+    /// consuming both quote characters. Used where a bare `String` is wanted
+    /// (object keys, bracket accessors) — no interpolation.
+    fn read_quoted(&mut self) -> Result<String> {
         let quote = self.bump().unwrap();
         let start = self.pos;
         while let Some(c) = self.peek() {
@@ -245,7 +263,17 @@ impl<'a> Parser<'a> {
             .map_err(|e| MarkdocError::ParseError(format!("Invalid UTF-8 in string: {e}")))?
             .to_string();
         self.pos += 1; // consume closing quote
-        Ok(Expression::Literal(Scalar::String(s)))
+        Ok(s)
+    }
+
+    fn parse_string(&mut self) -> Result<Expression> {
+        let s = self.read_quoted()?;
+        // A string carrying `{$var}` spans becomes an interpolation template;
+        // a plain string stays a literal scalar.
+        match split_interpolation(&s) {
+            Some(parts) => Ok(Expression::Interpolate(parts)),
+            None => Ok(Expression::Literal(Scalar::String(s))),
+        }
     }
 
     fn parse_number(&mut self) -> Result<Expression> {
@@ -388,10 +416,7 @@ impl<'a> Parser<'a> {
     /// Object keys are bare identifiers (`id`) or quoted strings (`"id"`).
     fn parse_object_key(&mut self) -> Result<String> {
         match self.peek() {
-            Some(b'"') | Some(b'\'') => match self.parse_string()? {
-                Expression::Literal(Scalar::String(s)) => Ok(s),
-                _ => unreachable!(),
-            },
+            Some(b'"') | Some(b'\'') => self.read_quoted(),
             Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = self.pos;
                 while let Some(c) = self.peek() {
@@ -408,6 +433,66 @@ impl<'a> Parser<'a> {
             _ => Err(MarkdocError::ParseError("Expected object key".into())),
         }
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// String-literal interpolation — `"…{$var}…"`
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Does this string literal carry a `{$…}` interpolation span? A cheap check
+/// the attribute parser uses to route interpolating strings through
+/// expression evaluation instead of storing them as plain literals.
+pub(crate) fn contains_interpolation(s: &str) -> bool {
+    match s.find("{$") {
+        Some(i) => s[i..].contains('}'),
+        None => false,
+    }
+}
+
+/// Split a string literal into interpolation parts: each `{$var.path}` span
+/// becomes a `Variable` expression and the surrounding text becomes `Literal`
+/// parts. Returns `None` when there is no valid `{$…}` span, so the caller
+/// keeps the whole string as one literal. Only `$variable` references
+/// interpolate — a bare `{` or `{word}` stays literal — so the syntax never
+/// collides with braces that appear literally in URLs or prose, and a
+/// variable path (no quotes, no nested braces) always ends at the next `}`.
+fn split_interpolation(s: &str) -> Option<Vec<Expression>> {
+    if !s.contains("{$") {
+        return None;
+    }
+    let mut parts: Vec<Expression> = Vec::new();
+    let mut literal = String::new();
+    let mut rest = s;
+    let mut found = false;
+    while let Some(open) = rest.find("{$") {
+        if let Some(close_rel) = rest[open..].find('}') {
+            let inner = rest[open + 1..open + close_rel].trim();
+            if let Ok(expr @ Expression::Variable(_)) = parse_expression(inner) {
+                literal.push_str(&rest[..open]);
+                if !literal.is_empty() {
+                    parts.push(Expression::Literal(Scalar::String(std::mem::take(
+                        &mut literal,
+                    ))));
+                }
+                parts.push(expr);
+                found = true;
+                rest = &rest[open + close_rel + 1..];
+                continue;
+            }
+        }
+        // Not a resolvable `{$…}` span — keep the `{` as a literal character
+        // and carry on scanning after it.
+        literal.push_str(&rest[..open + 1]);
+        rest = &rest[open + 1..];
+    }
+    literal.push_str(rest);
+    if !found {
+        return None;
+    }
+    if !literal.is_empty() {
+        parts.push(Expression::Literal(Scalar::String(literal)));
+    }
+    Some(parts)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -621,5 +706,78 @@ mod tests {
         let ctx = Context::new();
         let v = evaluate_default(&parse_expression(r#"debug("hi")"#).unwrap(), &ctx).unwrap();
         assert_eq!(v, Scalar::String("\"hi\"".into()));
+    }
+
+    #[test]
+    fn plain_string_stays_literal() {
+        assert!(matches!(
+            parse_expression(r#""just text""#).unwrap(),
+            Expression::Literal(Scalar::String(_))
+        ));
+        // A brace that isn't `{$…}` is literal, not interpolation.
+        assert!(matches!(
+            parse_expression(r#""a {word} b""#).unwrap(),
+            Expression::Literal(Scalar::String(_))
+        ));
+        assert!(!contains_interpolation("a {word} b"));
+        assert!(contains_interpolation("a {$word} b"));
+    }
+
+    #[test]
+    fn interpolates_single_variable() {
+        let ctx = ctx_with(&[("name", Scalar::String("Ada".into()))]);
+        let e = parse_expression(r#""Hello, {$name}!""#).unwrap();
+        assert!(matches!(e, Expression::Interpolate(_)));
+        assert_eq!(
+            evaluate_default(&e, &ctx).unwrap(),
+            Scalar::String("Hello, Ada!".into())
+        );
+    }
+
+    #[test]
+    fn interpolates_multiple_variables_and_whole_number() {
+        // Two variables in one string, plus a YAML-integer document number
+        // that stringifies without a trailing `.0` — the `concat` replacement.
+        let mut fm = HashMap::new();
+        fm.insert("documentNumber".to_string(), Scalar::Number(1234567.0));
+        let mut markdoc = HashMap::new();
+        markdoc.insert("frontmatter".to_string(), Scalar::Object(fm));
+        let ctx = ctx_with(&[
+            ("markdoc", Scalar::Object(markdoc)),
+            ("env", Scalar::String("prod".into())),
+        ]);
+        let e = parse_expression(
+            r#""https://{$env}.example.com/acme/{$markdoc.frontmatter.documentNumber}""#,
+        )
+        .unwrap();
+        assert_eq!(
+            evaluate_default(&e, &ctx).unwrap(),
+            Scalar::String("https://prod.example.com/acme/1234567".into())
+        );
+    }
+
+    #[test]
+    fn missing_interpolated_variable_is_empty() {
+        // An unresolved variable contributes nothing (Null → empty string),
+        // leaving the literal frame intact.
+        let ctx = Context::new();
+        let e = parse_expression(r#""x{$nope}y""#).unwrap();
+        assert_eq!(
+            evaluate_default(&e, &ctx).unwrap(),
+            Scalar::String("xy".into())
+        );
+    }
+
+    #[test]
+    fn interpolation_matches_only_variables() {
+        // `{$…}` interpolates; a bare function-call brace stays literal.
+        assert!(matches!(
+            parse_expression(r#""v{$x}""#).unwrap(),
+            Expression::Interpolate(_)
+        ));
+        assert!(matches!(
+            parse_expression(r#""v{equals($a,$b)}""#).unwrap(),
+            Expression::Literal(Scalar::String(_))
+        ));
     }
 }

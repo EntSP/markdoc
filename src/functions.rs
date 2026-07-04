@@ -79,36 +79,15 @@ pub fn default_functions() -> HashMap<String, (ConfigFunction, FunctionImpl)> {
         ),
     );
 
-    // concat function — join arguments into one string. Numbers stringify
-    // without a spurious decimal (a YAML int `1234` → `"1234"`), so a value
-    // like a document number can be spliced into a URL:
-    //   {% qr value=concat("https://x/", $markdoc.frontmatter.documentNumber) /%}
-    functions.insert(
-        "concat".to_string(),
-        (
-            ConfigFunction {
-                returns: Some(vec![ValidationType::String]),
-                parameters: None,
-            },
-            concat as FunctionImpl,
-        ),
-    );
-
     functions
 }
 
-fn concat(args: &[Scalar]) -> Result<Scalar> {
-    let mut out = String::new();
-    for a in args {
-        out.push_str(&scalar_to_plain_string(a));
-    }
-    Ok(Scalar::String(out))
-}
-
-/// Flatten a scalar to a plain string for `concat`. Whole-number floats
-/// (YAML integers arrive as `f64`) print without a fractional part; arrays /
-/// objects have no sensible flat form and contribute nothing.
-fn scalar_to_plain_string(s: &Scalar) -> String {
+/// Flatten a scalar to a plain string for string interpolation
+/// (`"…{$var}…"`). Whole-number floats (YAML integers arrive as `f64`) print
+/// without a fractional part, so a document number splices into a URL
+/// cleanly; arrays / objects have no sensible flat form and contribute
+/// nothing.
+pub(crate) fn scalar_to_plain_string(s: &Scalar) -> String {
     match s {
         Scalar::String(v) => v.clone(),
         Scalar::Number(n) if n.is_finite() && n.fract() == 0.0 => format!("{}", *n as i64),
@@ -208,27 +187,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn concat_joins_strings_and_whole_number() {
-        // A YAML integer (f64) stringifies without a trailing `.0`, so a
-        // document number splices cleanly into a URL.
-        let out = concat(&[
-            Scalar::String("https://x/".into()),
-            Scalar::Number(1234567.0),
-        ])
-        .unwrap();
-        assert_eq!(out, Scalar::String("https://x/1234567".into()));
-    }
-
-    #[test]
-    fn concat_handles_mixed_and_empty_args() {
-        assert_eq!(concat(&[]).unwrap(), Scalar::String(String::new()));
-        let out = concat(&[
-            Scalar::String("v".into()),
-            Scalar::Number(2.5),
-            Scalar::Boolean(true),
-            Scalar::Null,
-        ])
-        .unwrap();
-        assert_eq!(out, Scalar::String("v2.5true".into()));
+    fn scalar_to_plain_string_stringifies_whole_numbers() {
+        // A YAML integer (f64) prints without a trailing `.0`, so a document
+        // number splices cleanly into an interpolated URL; a fractional
+        // number keeps its decimals; null / arrays / objects are empty.
+        assert_eq!(
+            scalar_to_plain_string(&Scalar::Number(1234567.0)),
+            "1234567"
+        );
+        assert_eq!(scalar_to_plain_string(&Scalar::Number(2.5)), "2.5");
+        assert_eq!(scalar_to_plain_string(&Scalar::Boolean(true)), "true");
+        assert_eq!(scalar_to_plain_string(&Scalar::Null), "");
     }
 }
