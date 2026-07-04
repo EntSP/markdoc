@@ -22,7 +22,10 @@ pub use conditionals::evaluate_conditionals;
 pub use crossrefs::{AnchorInfo, collect_anchors, resolve_crossrefs};
 pub use footnotes::resolve_footnotes;
 pub use parser::{parse, parse_with_variables};
-pub use partials::{FsPartialResolver, InMemoryPartialResolver, PartialResolver, expand_partials};
+pub use partials::{
+    FsPartialResolver, InMemoryPartialResolver, PartialResolver, expand_partials,
+    expand_partials_with_variables,
+};
 pub use transformer::{transform, transform_with_context};
 pub use types::Context;
 pub use validator::validate;
