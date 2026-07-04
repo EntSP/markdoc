@@ -79,7 +79,43 @@ pub fn default_functions() -> HashMap<String, (ConfigFunction, FunctionImpl)> {
         ),
     );
 
+    // concat function — join arguments into one string. Numbers stringify
+    // without a spurious decimal (a YAML int `1234` → `"1234"`), so a value
+    // like a document number can be spliced into a URL:
+    //   {% qr value=concat("https://x/", $markdoc.frontmatter.documentNumber) /%}
+    functions.insert(
+        "concat".to_string(),
+        (
+            ConfigFunction {
+                returns: Some(vec![ValidationType::String]),
+                parameters: None,
+            },
+            concat as FunctionImpl,
+        ),
+    );
+
     functions
+}
+
+fn concat(args: &[Scalar]) -> Result<Scalar> {
+    let mut out = String::new();
+    for a in args {
+        out.push_str(&scalar_to_plain_string(a));
+    }
+    Ok(Scalar::String(out))
+}
+
+/// Flatten a scalar to a plain string for `concat`. Whole-number floats
+/// (YAML integers arrive as `f64`) print without a fractional part; arrays /
+/// objects have no sensible flat form and contribute nothing.
+fn scalar_to_plain_string(s: &Scalar) -> String {
+    match s {
+        Scalar::String(v) => v.clone(),
+        Scalar::Number(n) if n.is_finite() && n.fract() == 0.0 => format!("{}", *n as i64),
+        Scalar::Number(n) => n.to_string(),
+        Scalar::Boolean(b) => b.to_string(),
+        Scalar::Null | Scalar::Array(_) | Scalar::Object(_) => String::new(),
+    }
 }
 
 fn equals(args: &[Scalar]) -> Result<Scalar> {
@@ -164,5 +200,35 @@ fn scalar_eq(a: &Scalar, b: &Scalar) -> bool {
         (Scalar::Number(a), Scalar::Number(b)) => (a - b).abs() < f64::EPSILON,
         (Scalar::String(a), Scalar::String(b)) => a == b,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concat_joins_strings_and_whole_number() {
+        // A YAML integer (f64) stringifies without a trailing `.0`, so a
+        // document number splices cleanly into a URL.
+        let out = concat(&[
+            Scalar::String("https://x/".into()),
+            Scalar::Number(1234567.0),
+        ])
+        .unwrap();
+        assert_eq!(out, Scalar::String("https://x/1234567".into()));
+    }
+
+    #[test]
+    fn concat_handles_mixed_and_empty_args() {
+        assert_eq!(concat(&[]).unwrap(), Scalar::String(String::new()));
+        let out = concat(&[
+            Scalar::String("v".into()),
+            Scalar::Number(2.5),
+            Scalar::Boolean(true),
+            Scalar::Null,
+        ])
+        .unwrap();
+        assert_eq!(out, Scalar::String("v2.5true".into()));
     }
 }
