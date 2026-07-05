@@ -640,6 +640,61 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── ref ─────────────────────────────────────────────────────────────
+    // Inline cross-document reference / mention. Points at another
+    // publication by its immutable `document` number (or Adeptus `uuid`);
+    // Adeptus resolves it to the target's title + URL at render time. A
+    // structural tag — a renderer without Adeptus (markdoc-pdf) shows a
+    // placeholder link with the reference.
+    tags.insert(
+        "ref".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "document".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some("Target publication's document number".to_string()),
+                    },
+                );
+                attrs.insert(
+                    "uuid".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Target's Adeptus UUID (alternative to `document`)".to_string(),
+                        ),
+                    },
+                );
+                attrs.insert(
+                    "label".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Optional visible link text (defaults to the target title)".to_string(),
+                        ),
+                    },
+                );
+                attrs
+            }),
+            self_closing: true,
+            inline: true,
+            description: Some("Inline cross-document reference".to_string()),
+        },
+    );
+
     // ── qr ──────────────────────────────────────────────────────────────
     // A QR code generated from `value` (any string — a URL, a document
     // number, arbitrary text). A structural, output-agnostic tag: PDF draws
