@@ -695,6 +695,39 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── document-history ─────────────────────────────────────────────────
+    // Renders the frontmatter `documentHistory` (version / date / description
+    // entries) as a table where the tag sits. Block, self-closing; the
+    // renderer reads the frontmatter and draws the table. `title` overrides
+    // the heading (default "Document history"; an empty string omits it).
+    tags.insert(
+        "document-history".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: Some({
+                let mut attrs = HashMap::new();
+                attrs.insert(
+                    "title".to_string(),
+                    SchemaAttribute {
+                        attr_type: Some(vec![ValidationType::String]),
+                        render: None,
+                        default: None,
+                        required: false,
+                        description: Some(
+                            "Heading above the table (default \"Document history\"; empty omits it)"
+                                .to_string(),
+                        ),
+                    },
+                );
+                attrs
+            }),
+            self_closing: true,
+            inline: false,
+            description: Some("Document revision-history table from frontmatter".to_string()),
+        },
+    );
+
     // ── qr ──────────────────────────────────────────────────────────────
     // A QR code generated from `value` (any string — a URL, a document
     // number, arbitrary text). A structural, output-agnostic tag: PDF draws
