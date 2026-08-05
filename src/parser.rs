@@ -630,6 +630,89 @@ mod tests {
     }
 
     #[test]
+    fn parses_underscore_emphasis_with_interpolated_variable() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "model".to_string(),
+            Scalar::String("MiR250 Base Robot".to_string()),
+        );
+        let src = "* _{% $model %} Manual_\n";
+        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let em = find(&doc, &|n| matches!(n.node_type, NodeType::Em)).expect("em present");
+        let text = find(em, &|n| matches!(n.node_type, NodeType::Text)).expect("text in em");
+        assert_eq!(
+            text.attributes.get("content"),
+            Some(&Scalar::String("MiR250 Base Robot Manual".to_string()))
+        );
+    }
+
+    #[test]
+    fn parses_bold_with_interpolated_variable() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "mir_fleet".to_string(),
+            Scalar::String("MiR Fleet".to_string()),
+        );
+        let src = "**{% $mir_fleet %}**\n";
+        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let strong =
+            find(&doc, &|n| matches!(n.node_type, NodeType::Strong)).expect("strong present");
+        let text =
+            find(strong, &|n| matches!(n.node_type, NodeType::Text)).expect("text in strong");
+        assert_eq!(
+            text.attributes.get("content"),
+            Some(&Scalar::String("MiR Fleet".to_string()))
+        );
+    }
+
+    #[test]
+    fn spaced_underscores_do_not_form_emphasis() {
+        let src = "* _ {% $model %} Manual _\n";
+        let doc = parse(src, None).unwrap();
+        assert!(
+            find(&doc, &|n| matches!(n.node_type, NodeType::Em)).is_none(),
+            "spaces inside _ delimiters must prevent emphasis"
+        );
+    }
+
+    #[test]
+    fn indented_bold_inside_if_is_not_emphasis() {
+        // Four-space indent makes this a code block in CommonMark, not bold.
+        let src = r#"{% if $show %}
+
+    **MiR Fleet**
+
+{% /if %}"#;
+        let mut vars = HashMap::new();
+        vars.insert("show".to_string(), Scalar::Boolean(true));
+        let doc = parse_with_variables(src, None, &vars).unwrap();
+        assert!(
+            find(&doc, &|n| matches!(n.node_type, NodeType::Strong)).is_none(),
+            "indented bold inside if-block is not parsed as Strong"
+        );
+    }
+
+    #[test]
+    fn dedented_bold_inside_if_parses_as_strong() {
+        let src = r#"{% if $show %}
+
+**MiR Fleet**
+
+{% /if %}"#;
+        let mut vars = HashMap::new();
+        vars.insert("show".to_string(), Scalar::Boolean(true));
+        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let strong =
+            find(&doc, &|n| matches!(n.node_type, NodeType::Strong)).expect("strong present");
+        let text =
+            find(strong, &|n| matches!(n.node_type, NodeType::Text)).expect("text in strong");
+        assert_eq!(
+            text.attributes.get("content"),
+            Some(&Scalar::String("MiR Fleet".to_string()))
+        );
+    }
+
+    #[test]
     fn captures_heading_id_sugar() {
         let src = "# Overview {% #my-overview %}";
         let doc = parse(src, None).unwrap();
