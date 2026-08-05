@@ -616,6 +616,24 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── noParaSpaceBox ──────────────────────────────────────────────────
+    // Tight address / contact stack: child paragraphs keep their line
+    // height but drop the normal inter-paragraph gap (mirrors the web
+    // `.noParaSpaceBox p { margin: 0 }` rule). Used in copyright blocks.
+    tags.insert(
+        "noParaSpaceBox".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: None,
+            self_closing: false,
+            inline: false,
+            description: Some(
+                "Block that collapses paragraph spacing between its children".to_string(),
+            ),
+        },
+    );
+
     // ── chip ────────────────────────────────────────────────────────────
     // Inline colour chip / dot — the inline sibling of the block
     // `{% swatch %}`. A small filled mark (circle by default, square via
@@ -1298,11 +1316,14 @@ mod tests {
             "list",
             "caption",
             "lightindicators",
+            "noParaSpaceBox",
         ] {
             assert!(cfg.tags.contains_key(name), "{name} tag registered");
         }
         assert!(!cfg.tags["lightindicators"].inline);
         assert!(cfg.tags["lightindicators"].self_closing);
+        assert!(!cfg.tags["noParaSpaceBox"].inline);
+        assert!(!cfg.tags["noParaSpaceBox"].self_closing);
         // Float declares side/width/gap, all optional.
         let fattrs = cfg.tags["float"].attributes.as_ref().unwrap();
         for a in ["side", "width", "gap"] {
