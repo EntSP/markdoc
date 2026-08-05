@@ -631,37 +631,35 @@ mod tests {
 
     #[test]
     fn parses_underscore_emphasis_with_interpolated_variable() {
-        let mut vars = HashMap::new();
-        vars.insert(
-            "model".to_string(),
-            Scalar::String("MiR250 Base Robot".to_string()),
-        );
+        // Emphasis delimiters still wrap an inline `{% $var %}` interpolation
+        // node (resolved later at transform time).
         let src = "* _{% $model %} Manual_\n";
-        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let doc = parse(src, None).unwrap();
         let em = find(&doc, &|n| matches!(n.node_type, NodeType::Em)).expect("em present");
+        let interp = find(em, &|n| n.tag.as_deref() == Some(INTERPOLATION_TAG))
+            .expect("interpolation inside em");
+        assert_eq!(
+            interp.expressions.get("primary").map(String::as_str),
+            Some("$model")
+        );
         let text = find(em, &|n| matches!(n.node_type, NodeType::Text)).expect("text in em");
         assert_eq!(
             text.attributes.get("content"),
-            Some(&Scalar::String("MiR250 Base Robot Manual".to_string()))
+            Some(&Scalar::String(" Manual".to_string()))
         );
     }
 
     #[test]
     fn parses_bold_with_interpolated_variable() {
-        let mut vars = HashMap::new();
-        vars.insert(
-            "mir_fleet".to_string(),
-            Scalar::String("MiR Fleet".to_string()),
-        );
         let src = "**{% $mir_fleet %}**\n";
-        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let doc = parse(src, None).unwrap();
         let strong =
             find(&doc, &|n| matches!(n.node_type, NodeType::Strong)).expect("strong present");
-        let text =
-            find(strong, &|n| matches!(n.node_type, NodeType::Text)).expect("text in strong");
+        let interp = find(strong, &|n| n.tag.as_deref() == Some(INTERPOLATION_TAG))
+            .expect("interpolation inside strong");
         assert_eq!(
-            text.attributes.get("content"),
-            Some(&Scalar::String("MiR Fleet".to_string()))
+            interp.expressions.get("primary").map(String::as_str),
+            Some("$mir_fleet")
         );
     }
 
@@ -683,9 +681,7 @@ mod tests {
     **MiR Fleet**
 
 {% /if %}"#;
-        let mut vars = HashMap::new();
-        vars.insert("show".to_string(), Scalar::Boolean(true));
-        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let doc = parse(src, None).unwrap();
         assert!(
             find(&doc, &|n| matches!(n.node_type, NodeType::Strong)).is_none(),
             "indented bold inside if-block is not parsed as Strong"
@@ -699,9 +695,7 @@ mod tests {
 **MiR Fleet**
 
 {% /if %}"#;
-        let mut vars = HashMap::new();
-        vars.insert("show".to_string(), Scalar::Boolean(true));
-        let doc = parse_with_variables(src, None, &vars).unwrap();
+        let doc = parse(src, None).unwrap();
         let strong =
             find(&doc, &|n| matches!(n.node_type, NodeType::Strong)).expect("strong present");
         let text =

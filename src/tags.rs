@@ -598,6 +598,24 @@ pub fn default_tags() -> HashMap<String, Schema> {
         },
     );
 
+    // ── lightindicators ─────────────────────────────────────────────────
+    // Status-light legend for MiR manuals — a fixed grid of colour bars
+    // with titles and descriptions (mirrors the web `{% lightindicators %}`
+    // / LightIndicators component). Self-closing; no attributes.
+    tags.insert(
+        "lightindicators".to_string(),
+        Schema {
+            render: None,
+            children: None,
+            attributes: None,
+            self_closing: true,
+            inline: false,
+            description: Some(
+                "Status-light indicator legend (colour bars with labels)".to_string(),
+            ),
+        },
+    );
+
     // ── chip ────────────────────────────────────────────────────────────
     // Inline colour chip / dot — the inline sibling of the block
     // `{% swatch %}`. A small filled mark (circle by default, square via
@@ -1269,10 +1287,22 @@ mod tests {
     fn default_config_has_layout_tags_registered() {
         let cfg = Config::default();
         for name in [
-            "columns", "grid", "swatch", "chip", "qr", "float", "color", "c", "list", "caption",
+            "columns",
+            "grid",
+            "swatch",
+            "chip",
+            "qr",
+            "float",
+            "color",
+            "c",
+            "list",
+            "caption",
+            "lightindicators",
         ] {
             assert!(cfg.tags.contains_key(name), "{name} tag registered");
         }
+        assert!(!cfg.tags["lightindicators"].inline);
+        assert!(cfg.tags["lightindicators"].self_closing);
         // Float declares side/width/gap, all optional.
         let fattrs = cfg.tags["float"].attributes.as_ref().unwrap();
         for a in ["side", "width", "gap"] {
