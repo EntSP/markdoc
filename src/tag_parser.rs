@@ -195,7 +195,7 @@ fn is_valid_name(s: &str) -> bool {
 ///   - `key=funcname(arg1, arg2)`
 ///   - bare leading expression (no key=): becomes `primary`. This is
 ///     needed for `{% if $cfg.foo %}` and similar.
-fn parse_attrs(src: &str) -> TagAttrs {
+pub(crate) fn parse_attrs(src: &str) -> TagAttrs {
     let mut attrs = TagAttrs::default();
     let bytes = src.as_bytes();
     let mut cursor = 0usize;
