@@ -58,7 +58,8 @@ enum TableItem {
 fn open_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // `{% table %}` / `{% table attrs %}` — an opening tag (not `/table`).
-    RE.get_or_init(|| Regex::new(r"\{%\s*table\b[^%]*%\}").unwrap())
+    // Capture group 1 is the attribute body (may be empty / whitespace).
+    RE.get_or_init(|| Regex::new(r"\{%\s*table\b([^%]*)%\}").unwrap())
 }
 
 fn close_re() -> &'static Regex {
@@ -100,13 +101,17 @@ fn is_list_syntax(inner: &str) -> bool {
 /// Replace each `{% table %}…{% /table %}` block with a placeholder sentinel
 /// and return the parsed `Table` nodes (indexed by the sentinel). The inner
 /// text is parsed before pulldown-cmark sees it, so `---`/`*` survive.
+/// Opening-tag attributes (e.g. `column_weights="1 2"`) are copied onto the
+/// resulting `Table` node so the PDF renderer can honour them.
 pub fn extract_list_tables(content: &str) -> (String, Vec<Node>) {
     let mut out = String::with_capacity(content.len());
     let mut tables: Vec<Node> = Vec::new();
     let mut pos = 0;
-    while let Some(m) = open_re().find(&content[pos..]) {
-        let open_start = pos + m.start();
-        let open_end = pos + m.end();
+    while let Some(m) = open_re().captures(&content[pos..]) {
+        let full = m.get(0).unwrap();
+        let open_start = pos + full.start();
+        let open_end = pos + full.end();
+        let open_attrs = m.get(1).map(|g| g.as_str()).unwrap_or("");
         match close_re().find(&content[open_end..]) {
             Some(c) => {
                 let close_end = open_end + c.end();
@@ -114,7 +119,7 @@ pub fn extract_list_tables(content: &str) -> (String, Vec<Node>) {
                 if is_list_syntax(inner) {
                     out.push_str(&content[pos..open_start]);
                     let idx = tables.len();
-                    tables.push(parse_list_table(inner));
+                    tables.push(parse_list_table(inner, open_attrs));
                     out.push(TABLE_OPEN);
                     out.push_str(&idx.to_string());
                     out.push(TABLE_CLOSE);
@@ -177,7 +182,10 @@ fn text_content(node: &Node) -> Option<&str> {
 }
 
 /// Parse a `{% table %}` block's inner text into a `Table` node.
-fn parse_list_table(inner: &str) -> Node {
+/// `open_attrs` is the attribute body from the opening tag (e.g.
+/// ` column_weights="1 2"`); literals are merged onto the table node so
+/// PDF styling overrides survive list-syntax extraction.
+fn parse_list_table(inner: &str, open_attrs: &str) -> Node {
     let items = parse_table_items(inner);
     // Header-less when the table begins with `---` (first item is an empty
     // row produced by that leading separator) or when there are no items.
@@ -194,6 +202,10 @@ fn parse_list_table(inner: &str) -> Node {
 
     let mut children = Vec::new();
     let mut table_attrs = HashMap::new();
+    // Opening-tag attrs first so header-derived `align` can still override
+    // if an author ever sets both (align from cells is the source of truth
+    // for column alignment).
+    merge_open_attrs(&mut table_attrs, open_attrs);
     if body_start == 1 {
         if let TableItem::Row(block) = &items[0] {
             let header = parse_row(block);
@@ -217,6 +229,19 @@ fn parse_list_table(inner: &str) -> Node {
     }
 
     Node::new(NodeType::Table, table_attrs, children, None)
+}
+
+/// Copy literal attributes from a `{% table … %}` opening tag onto
+/// `attrs`. Expression-valued attrs are ignored here (list-table
+/// extraction runs before an evaluation context exists); authors should
+/// use literals such as `column_weights="1 2"`.
+fn merge_open_attrs(attrs: &mut HashMap<String, Scalar>, open_attrs: &str) {
+    let parsed = tag_parser::parse_attrs(open_attrs);
+    for (key, value) in parsed.named {
+        if let AttrValue::Literal(s) = value {
+            attrs.insert(key, s);
+        }
+    }
 }
 
 /// Convert structural table items into `Tr` / `if` / `else` nodes for the
@@ -745,5 +770,25 @@ mod tests {
         assert_eq!(count_text(table, "Shelf harness"), 0);
         assert!(count_text(table, "Emergency stop") > 0);
         assert_eq!(count_nodes(table, &NodeType::Tr), 2); // header + Emergency
+    }
+
+    #[test]
+    fn list_table_preserves_column_weights_attr() {
+        let src = r#"{% table column_weights="1 2.5" %}
+* H1
+* H2
+---
+* a
+* b
+{% /table %}
+"#;
+        let doc = crate::parse(src, None).unwrap();
+        let table = find_node(&doc, &NodeType::Table).expect("table node");
+        assert_eq!(
+            table.attributes.get("column_weights"),
+            Some(&Scalar::String("1 2.5".into())),
+            "opening-tag column_weights must land on the Table node, tree was {table:#?}"
+        );
+        assert_eq!(count_nodes(table, &NodeType::Td), 2);
     }
 }

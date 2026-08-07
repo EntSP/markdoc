@@ -232,6 +232,17 @@ fn parse_tokens(tokens: Vec<Token>, args: Option<ParserArgs>) -> Result<Node> {
             }
             TokenEvent::End(_token_type) => {
                 if stack.len() > 1 {
+                    // `close_to_tag` may have already attached open markdown
+                    // containers (lists, paragraphs, …) to a Markdoc tag that
+                    // closed mid-structure. Pulldown-cmark still emits the
+                    // matching End events afterward; ignoring them when a
+                    // Markdoc tag is on top keeps `{% if %}` / `{% callout %}`
+                    // from being popped early (which would leak later siblings
+                    // out of the conditional — e.g. a list inside a callout
+                    // inside an if, then a blank line, then another callout).
+                    if matches!(stack.last().map(|n| &n.node_type), Some(NodeType::Tag)) {
+                        continue;
+                    }
                     let node = stack.pop().unwrap();
 
                     if let Some(parent) = stack.last_mut() {
@@ -811,6 +822,85 @@ mod tests {
         );
         // Each branch's content is wrapped in its own paragraph.
         assert_eq!(count_children(if_node, &is_para), 2);
+    }
+
+    #[test]
+    fn list_inside_callout_inside_if_keeps_following_siblings() {
+        // Regression: a markdown list inside `{% callout %}` leaves
+        // pending List/Item/Paragraph End events after `{% /callout %}`.
+        // Those must not pop the enclosing `{% if %}`, or later callouts
+        // (and `{% else / %}`) escape the conditional.
+        let src = r#"{% if $x %}
+{% callout type="warning" %}
+Intro text.
+* first item
+
+* second item
+{% /callout %}
+
+{% callout type="warning" %}
+Second callout
+{% /callout %}
+{% /if %}
+"#;
+        let doc = parse(src, None).unwrap();
+        assert_eq!(
+            count_children(&doc, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("if")),
+            1,
+            "exactly one top-level if, tree was {doc:#?}"
+        );
+        let if_node = tag_named(&doc, "if").unwrap();
+        assert_eq!(
+            count_children(if_node, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("callout")),
+            2,
+            "both callouts must stay inside if, tree was {doc:#?}"
+        );
+        assert_eq!(
+            count_children(&doc, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("callout")),
+            0,
+            "no callout may leak to document root, tree was {doc:#?}"
+        );
+    }
+
+    #[test]
+    fn list_inside_callout_then_else_stays_inside_if() {
+        let src = r#"{% if $top_module %}
+{% callout type="warning" %}
+If the robot transports a load that is larger than the supported size.
+
+* Do not load the robot with loads that extend beyond supported dimensions.
+{% /callout %}
+
+{% else / %}
+
+{% callout type="warning" %}
+Else branch callout
+{% /callout %}
+{% /if %}
+"#;
+        let doc = parse(src, None).unwrap();
+        let if_node = tag_named(&doc, "if").expect("if present");
+        assert_eq!(
+            count_children(if_node, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("else")),
+            1,
+            "else must be a direct child of if, tree was {doc:#?}"
+        );
+        assert_eq!(
+            count_children(if_node, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("callout")),
+            2,
+            "both branch callouts must stay inside if, tree was {doc:#?}"
+        );
+        assert_eq!(
+            count_children(&doc, &|n| matches!(n.node_type, NodeType::Tag)
+                && n.tag.as_deref() == Some("else")),
+            0,
+            "else must not leak to document root, tree was {doc:#?}"
+        );
     }
 
     #[test]
